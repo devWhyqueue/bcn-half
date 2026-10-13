@@ -89,19 +89,22 @@ def send(token, chat_id, text):
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
+    chat_ids = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
+    if not token or not chat_ids:
         sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
     url = os.environ.get("WATCH_URL", DEFAULT_URL)
     poll = int(os.environ.get("POLL_SECONDS", "60"))
 
     def notify(text):
-        try:
-            send(token, chat_id, text)
-        except Exception:
-            log.exception("telegram send failed")
-            return False
-        return True
+        # True if any chat got it: one unreachable chat must not re-alert the others every poll
+        sent = False
+        for chat_id in chat_ids:
+            try:
+                send(token, chat_id, text)
+                sent = True
+            except Exception:
+                log.exception("telegram send to %s failed", chat_id)
+        return sent
 
     notify(f"bcn-half watching (every {poll}s)\n{url}")
     seen, fails, broken = set(), 0, False
