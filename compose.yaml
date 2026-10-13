@@ -1,0 +1,6 @@
+services:
+  bcn-half:
+    build: .
+    container_name: bcn-half
+    restart: unless-stopped
+    env_file: .env
