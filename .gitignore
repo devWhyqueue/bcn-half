@@ -1,2 +1,11 @@
 .env
 __pycache__/
+.playwright-mcp/
+artifacts/
+.venv*/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
