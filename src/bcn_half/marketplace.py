@@ -1,15 +1,29 @@
-"""Fetch the RPM Sports marketplace page and parse its listings table."""
+"""Fetch the RPM Sports marketplace page, parse its listings, and pick a half marathon."""
 
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import override
+from urllib.parse import urlsplit
 
 UA = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 log = logging.getLogger("bcn-half")
+HALF = re.compile(
+    r"half[ -]marathon|medio marat[oó]n|media marat[oó]n|mitja marat[oó]|21\s*km",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class Listing:
+    reference: str
+    category: str
+    price: str
 
 
 class _Listings(HTMLParser):
@@ -95,3 +109,28 @@ def fetch(url: str) -> str:
             log.warning("HTTP %s; neuer Versuch in %ss", error.code, delay)
             time.sleep(delay)
     raise RuntimeError("HTTP-Wiederholungslimit erreicht")
+
+
+def select_listing(rows: list[str], reference: str | None = None) -> Listing | None:
+    """Select a half-marathon row by its exact reference, never by row position."""
+    for row in rows:
+        cells = row.split(" · ")
+        if len(cells) < 3 or not HALF.search(cells[1]):
+            continue
+        if reference and cells[0] != reference:
+            continue
+        price = re.search(r"[\d.,]+\s*€", cells[2])
+        if price:
+            return Listing(cells[0], cells[1], price.group())
+    return None
+
+
+def check_url(url: str) -> None:
+    """Reject anything but an HTTPS RPM Sports transfer-registration URL."""
+    parts = urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or parts.netloc != "inscripciones.rpmsports.es"
+        or not parts.path.endswith("/transfer-registration")
+    ):
+        raise ValueError("HTTPS-URL des RPM-Sports-Marketplace erwartet")

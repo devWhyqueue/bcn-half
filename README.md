@@ -46,9 +46,9 @@ If the solve fails, the CAPTCHA can be completed manually in the visible browser
 for 300 seconds.
 
 Each new bib gets the first address not yet accepted. The email is submitted only
-once the CAPTCHA is solved or absent. The site's reply modal decides the outcome: a
-`Warning`/error title keeps the address for the next bib, any other title marks it
-used. The site's reply is included in the Telegram message. When every address is
+once the CAPTCHA is solved or absent. The site titles every reply `Warning`, so its
+body decides: "REGISTRATION RESERVED FOR 24 HOURS" marks the address used, anything
+else (for example a failed robot check) keeps it for the next bib. The site's reply is included in the Telegram message. When every address is
 used, the bot notifies Telegram and exits. The confirmation link arrives by email
 and must be completed within 24 hours; payment is never automated.
 
@@ -96,7 +96,10 @@ test returns a nonzero status. Screenshots, sanitized logs, and token-free JSON
 results go into timestamped `artifacts/` directories, which remain gitignored.
 `automated-result.json` preserves the marketplace result before inspection;
 subsequent manual completion is recorded separately in `result.json`.
-Credentials and solution tokens are never printed or saved. Tests send no Telegram
+Each attempt also saves `submit-response.txt` (raw server reply to the submit POST)
+and `submitted.html`. `--test-application` additionally records `trace.zip` (open
+with `uv run playwright show-trace`); it contains the submitted email and the spent
+CAPTCHA token. Credentials are never printed or saved. Tests send no Telegram
 notifications.
 
 ## Development

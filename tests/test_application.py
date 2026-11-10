@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from playwright.sync_api import Error
 
@@ -86,13 +86,21 @@ class SelectionTest(unittest.TestCase):
         self.assertIn("ready", result.message())
 
     def test_submit_email_classifies_site_reply(self):
-        for title, status in (("Warning", "email-rejected"), ("OK", "email-submitted")):
-            page = Mock()
-            page.locator.return_value.inner_text.side_effect = [title, "body"]
+        replies = (
+            ("We could not verify that you are not a robot.", "email-rejected"),
+            (
+                "REGISTRATION RESERVED FOR 24 HOURS.\nWe have sent an email",
+                "email-submitted",
+            ),
+        )
+        for body, status in replies:
+            page = MagicMock()
+            page.locator.return_value.inner_text.side_effect = ["Warning", body]
             result = application.ApplicationResult(
                 None, "https://example.org", "application-ready", "a@example.org"
             )
-            application._submit_email(page, result, Path("."))
+            with patch("bcn_half.application._record_reply"):
+                application._submit_email(page, result, Path("."))
             self.assertEqual(result.status, status)
             self.assertIn("a@example.org", result.message())
-            self.assertIn(f"{title}: body", result.message())
+            self.assertIn(f"Warning: {body}", result.message())

@@ -92,7 +92,7 @@ class PollingTest(unittest.TestCase):
     def test_env_preserves_process_values(self):
         with (
             tempfile.TemporaryDirectory() as directory,
-            patch.dict(os.environ, {"POLL_SECONDS": "12"}),
+            patch.dict(os.environ, {"POLL_SECONDS": "12"}, clear=True),
         ):
             path = Path(directory) / ".env"
             path.write_text(

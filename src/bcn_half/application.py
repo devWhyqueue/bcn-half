@@ -8,29 +8,22 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Error, Page, sync_playwright
+from playwright.sync_api import Browser, Error, Page, Response, sync_playwright
+from playwright.sync_api import TimeoutError as BrowserTimeout
 
 from bcn_half.artifacts import close_log, open_artifacts
 from bcn_half.captcha import TOKEN_READY, failure_reason, handle_captcha
-from bcn_half.marketplace import parse_listings
+from bcn_half.marketplace import Listing, check_url, parse_listings, select_listing
 
 log = logging.getLogger("bcn-half")
-HALF = re.compile(
-    r"half[ -]marathon|medio marat[oó]n|media marat[oó]n|mitja marat[oó]|21\s*km",
-    re.IGNORECASE,
-)
 EMAIL = "#cphCuerpo_tbEmailSolicitarCambio"
 SUBMIT = "#cphCuerpo_btSolicitarTraspaso"
-REJECTED = re.compile(r"warning|error|aviso|atenci[oó]n|advertencia", re.IGNORECASE)
+MODAL_TITLE = "#modal-mensaje #lblTituloMensaje"
+RESERVED = re.compile(
+    r"reserved for 24 hours|reservad[ao] (durante|por) 24 horas", re.IGNORECASE
+)
 SUBMITTABLE = ("not-present", "token-ready", "verified-manually")
 FAILURES = (Error, OSError, ValueError, RuntimeError)
-
-
-@dataclass(frozen=True)
-class Listing:
-    reference: str
-    category: str
-    price: str
 
 
 @dataclass
@@ -53,20 +46,6 @@ class ApplicationResult:
             f"Bewerbung: {self.status}\n{details}\nCAPTCHA: {self.captcha}"
             f"\nE-Mail {self.email}: {self.reply or 'nicht gesendet'}\n{self.event_url}"
         )
-
-
-def select_listing(rows: list[str], reference: str | None = None) -> Listing | None:
-    """Select a half-marathon row by its exact reference, never by row position."""
-    for row in rows:
-        cells = row.split(" · ")
-        if len(cells) < 3 or not HALF.search(cells[1]):
-            continue
-        if reference and cells[0] != reference:
-            continue
-        price = re.search(r"[\d.,]+\s*€", cells[2])
-        if price:
-            return Listing(cells[0], cells[1], price.group())
-    return None
 
 
 def _find_listing(page: Page, result: ApplicationResult, reference: str | None) -> None:
@@ -100,17 +79,42 @@ def _open_form(page: Page, result: ApplicationResult, listing: Listing) -> None:
     result.status = "application-ready"
 
 
+def _is_site_post(response: Response) -> bool:
+    request = response.request
+    return (
+        request.method == "POST"
+        and urlsplit(request.url).netloc == "inscripciones.rpmsports.es"
+    )
+
+
+def _record_reply(page: Page, response: Response, folder: Path) -> None:
+    """Keep the raw server reply, final page, and screenshot whatever the outcome."""
+    body = ""
+    with suppress(Error):
+        body = response.text()
+    reply = f"{response.status} {response.url}\n\n{body}"
+    (folder / "submit-response.txt").write_text(reply, encoding="utf-8")
+    with suppress(BrowserTimeout):
+        page.locator(MODAL_TITLE).wait_for(state="visible", timeout=15000)
+    page.wait_for_load_state()
+    (folder / "submitted.html").write_text(page.content(), encoding="utf-8")
+    page.screenshot(path=str(folder / "submitted.png"), full_page=True)
+
+
 def _submit_email(page: Page, result: ApplicationResult, folder: Path) -> None:
-    """Submit the email once and record the site's reply from its message modal."""
+    """Submit the email once and classify the site's reply from its message modal."""
     page.locator(EMAIL).fill(result.email)
-    page.locator(SUBMIT).click()
+    with page.expect_response(_is_site_post) as response:
+        page.locator(SUBMIT).click()
     log.info("E-Mail für %s gesendet", result.listing)
-    page.locator("#modal-mensaje #lblTituloMensaje").wait_for(state="visible")
-    title = page.locator("#lblTituloMensaje").inner_text().strip()
+    _record_reply(page, response.value, folder)
+    if not page.locator(MODAL_TITLE).is_visible():
+        result.status = "email-unconfirmed"
+        return
+    title = page.locator(MODAL_TITLE).inner_text().strip()
     body = page.locator("#lblCuerpoMensaje").inner_text().strip()
     result.reply = f"{title}: {body}"
-    result.status = "email-rejected" if REJECTED.search(title) else "email-submitted"
-    page.screenshot(path=str(folder / "submitted.png"), full_page=True)
+    result.status = "email-submitted" if RESERVED.search(body) else "email-rejected"
 
 
 def _apply(
@@ -188,21 +192,38 @@ def _close_log(
     close_log(handler)
 
 
-def _check_url(url: str) -> None:
-    parts = urlsplit(url)
-    if (
-        parts.scheme != "https"
-        or parts.netloc != "inscripciones.rpmsports.es"
-        or not parts.path.endswith("/transfer-registration")
-    ):
-        raise ValueError("HTTPS-URL des RPM-Sports-Marketplace erwartet")
+def _run_in_context(
+    browser: Browser,
+    result: ApplicationResult,
+    reference: str | None,
+    folder: Path,
+    keep_open: bool,
+    trace: bool,
+) -> None:
+    """Run the attempt; with trace, record DOM, network, and console in trace.zip."""
+    context = browser.new_context(locale="en-US")
+    if trace:
+        context.tracing.start(screenshots=True, snapshots=True)
+    try:
+        page = context.new_page()
+        page.set_default_timeout(30000)
+        _run_in_browser(page, result, reference, folder, keep_open)
+    finally:
+        if trace:
+            with suppress(Error):
+                context.tracing.stop(path=str(folder / "trace.zip"))
 
 
 def run_application(
-    url: str, reference: str | None = None, *, email: str, keep_open: bool = False
+    url: str,
+    reference: str | None = None,
+    *,
+    email: str,
+    keep_open: bool = False,
+    trace: bool = False,
 ) -> ApplicationResult:
     """Run one visible workflow that submits the email; save screenshots and a result."""
-    _check_url(url)
+    check_url(url)
     folder, handler = open_artifacts()
     result = ApplicationResult(None, url, "browser-starting", email)
     try:
@@ -210,9 +231,7 @@ def run_application(
             sync_playwright() as playwright,
             playwright.chromium.launch(headless=False) as browser,
         ):
-            page = browser.new_page(locale="en-US")
-            page.set_default_timeout(30000)
-            _run_in_browser(page, result, reference, folder, keep_open)
+            _run_in_context(browser, result, reference, folder, keep_open, trace)
     except FAILURES as error:
         if result.status != "browser-closed":
             result.status = (

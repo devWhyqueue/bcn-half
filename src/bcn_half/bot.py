@@ -180,7 +180,7 @@ def _poll_seconds() -> int:
 
 def _test_application(url: str, email: str, keep_open: bool) -> int:
     workflow = import_module("bcn_half.application")
-    result = workflow.run_application(url, email=email, keep_open=keep_open)
+    result = workflow.run_application(url, email=email, keep_open=keep_open, trace=True)
     log.info("%s", result.message())
     return 0 if result.status == "email-submitted" else 1
 
