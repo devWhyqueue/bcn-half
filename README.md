@@ -128,8 +128,12 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The image installs the locked package without dev dependencies and runs the
-notification checker. Applying requires Chromium and a desktop session, so keep
-`APPLY=false` for Docker.
+The image installs the locked package without dev dependencies, Playwright's
+Chromium, and Xvfb. The watcher runs under `xvfb-run`, so `APPLY=true` works on
+headless hosts (amd64 or arm64) with the same headed browser as on a desktop. The
+manual CAPTCHA fallback cannot be used there: a failed solve waits 300 seconds and
+reports `manual-required`. Compose sets `shm_size: 1gb` for Chromium and `init: true`
+so `docker stop` shuts down cleanly. Diagnostic `artifacts/` stay inside the
+container and are lost on rebuild.
 `.dockerignore` excludes `.env`, environments, and diagnostic artifacts from the
 build context; Compose supplies runtime variables through `env_file: .env`.

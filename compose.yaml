@@ -3,4 +3,7 @@ services:
     build: .
     container_name: bcn-half
     restart: unless-stopped
+    # init forwards docker stop to xvfb-run; Chromium needs more than the 64 MB default shm.
+    init: true
+    shm_size: 1gb
     env_file: .env
