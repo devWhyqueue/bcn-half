@@ -55,9 +55,15 @@ class Watcher:
     """Poll the marketplace, alert Telegram, and apply with unused email addresses."""
 
     def __init__(
-        self, url: str, telegram: Telegram, emails: list[str], apply: bool
+        self,
+        url: str,
+        telegram: Telegram,
+        emails: list[str],
+        apply: bool,
+        max_price: float | None = None,
     ) -> None:
         self.url, self.telegram, self.emails = url, telegram, emails
+        self.max_price = max_price
         self.workflow = import_module("bcn_half.application") if apply else None
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.seen: set[str] = set()
@@ -126,7 +132,7 @@ class Watcher:
         if self.workflow is None or self.pending is not None:
             return
         eligible = [row for row in rows if row.split(" · ")[0] not in self.attempted]
-        listing = self.workflow.select_listing(eligible)
+        listing = self.workflow.select_listing(eligible, max_price=self.max_price)
         if listing is None:
             return
         self.attempted.add(listing.reference)
@@ -178,6 +184,16 @@ def _poll_seconds() -> int:
     return poll
 
 
+def _max_price() -> float | None:
+    value = os.environ.get("MAX_PRICE", "").strip()
+    if not value:
+        return None
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        sys.exit("MAX_PRICE muss eine Zahl sein, z. B. 110 oder 110,50")
+
+
 def _test_application(url: str, email: str, keep_open: bool) -> int:
     workflow = import_module("bcn_half.application")
     result = workflow.run_application(url, email=email, keep_open=keep_open, trace=True)
@@ -216,7 +232,7 @@ def main() -> int:
     if args.test_application:
         return _test_application(url, emails[0], args.keep_open)
     telegram, poll = _telegram(), _poll_seconds()
-    return Watcher(url, telegram, emails, apply).run(poll)
+    return Watcher(url, telegram, emails, apply, _max_price()).run(poll)
 
 
 def cli() -> None:

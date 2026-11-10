@@ -31,7 +31,8 @@ use the configured URL; `--event-url` explicitly overrides it for a particular r
 The default command checks and notifies only. To apply for matching half-marathon
 bibs on a desktop machine, set `APPLY=true` in `.env` (or pass `--apply`) together
 with `MAIL_ADDRESSES` (comma-separated) and `CAPTCHANO_API_KEY` (alias
-`CAPTCHANO_KEY`). Applying without both exits with an error.
+`CAPTCHANO_KEY`). Applying without both exits with an error. Optional `MAX_PRICE`
+(euros, e.g. `110` or `110,50`) skips listings that cost more.
 
 ```sh
 uv run playwright install chromium

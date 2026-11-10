@@ -71,6 +71,13 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(application.select_listing(rows, "REF2").price, "70 €")
         self.assertIsNone(application.select_listing(rows, "REF3"))
 
+    def test_max_price_skips_expensive_listings(self):
+        rows = ["REF1 · Half marathon · 1.120,00 €", "REF2 · Half marathon · 103,07 €"]
+        self.assertEqual(
+            application.select_listing(rows, max_price=103.07).reference, "REF2"
+        )
+        self.assertIsNone(application.select_listing(rows, max_price=100))
+
     def test_notification_keeps_event_and_reference(self):
         listing = application.select_listing(["REF2 · Half marathon · 70 €"])
         result = application.ApplicationResult(

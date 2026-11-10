@@ -111,8 +111,15 @@ def fetch(url: str) -> str:
     raise RuntimeError("HTTP-Wiederholungslimit erreicht")
 
 
-def select_listing(rows: list[str], reference: str | None = None) -> Listing | None:
-    """Select a half-marathon row by its exact reference, never by row position."""
+def price_value(price: str) -> float:
+    """Convert a Spanish-formatted price such as "1.100,00 €" to 1100.0."""
+    return float(price.rstrip("€ ").replace(".", "").replace(",", "."))
+
+
+def select_listing(
+    rows: list[str], reference: str | None = None, max_price: float | None = None
+) -> Listing | None:
+    """Select a half-marathon row by exact reference, never by position, up to max_price."""
     for row in rows:
         cells = row.split(" · ")
         if len(cells) < 3 or not HALF.search(cells[1]):
@@ -120,7 +127,7 @@ def select_listing(rows: list[str], reference: str | None = None) -> Listing | N
         if reference and cells[0] != reference:
             continue
         price = re.search(r"[\d.,]+\s*€", cells[2])
-        if price:
+        if price and (max_price is None or price_value(price.group()) <= max_price):
             return Listing(cells[0], cells[1], price.group())
     return None
 

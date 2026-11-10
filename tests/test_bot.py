@@ -143,7 +143,7 @@ class WorkflowPollingTest(unittest.TestCase):
             "CAPTCHANO_API_KEY": "key",
         }
         workflow = Mock()
-        workflow.select_listing.side_effect = lambda rows: (
+        workflow.select_listing.side_effect = lambda rows, **_: (
             Mock(reference="REF2", price="70 €") if rows else None
         )
         future = Mock()
@@ -194,7 +194,7 @@ class WorkflowPollingTest(unittest.TestCase):
             "CAPTCHANO_API_KEY": "key",
         }
         workflow = Mock()
-        workflow.select_listing.side_effect = lambda rows: (
+        workflow.select_listing.side_effect = lambda rows, **_: (
             Mock(reference=rows[0].split(" · ")[0], price="70 €") if rows else None
         )
         outcomes = iter([("rejected", False), ("ok", True), ("ok", True)])

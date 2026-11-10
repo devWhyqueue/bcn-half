@@ -1,1 +1,2 @@
-After every code change, run /clean-code skill.
+- After every code change, run /clean-code skill.
+- If asked to commit, keep it on main branch.
