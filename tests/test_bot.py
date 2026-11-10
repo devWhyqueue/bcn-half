@@ -5,8 +5,8 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bcn_half import bot
-from bcn_half.bot import parse_listings
+from bcn_half import bot, marketplace
+from bcn_half.marketplace import parse_listings
 
 HEAD = """<html><body><table class="other"><tbody><tr><td>x</td></tr></tbody></table>
 <table class="table table-listados air-top"><thead><tr><th>Ref.</th><th>Tarifa</th>
@@ -44,6 +44,18 @@ class PollingTest(unittest.TestCase):
                     bot.main()
         self.assertEqual(stopped.exception.code, 2)
 
+    def test_apply_requires_mail_addresses(self):
+        env = {
+            "WATCH_URL": "https://example.org",
+            "APPLY": "true",
+            "CAPTCHANO_API_KEY": "k",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch("bcn_half.bot.load_env"), patch("sys.argv", ["bcn-half"]):
+                with self.assertRaises(SystemExit) as stopped:
+                    bot.main()
+        self.assertEqual(stopped.exception.code, 2)
+
     def test_fetch_retries_rate_limit(self):
         response = Mock()
         response.__enter__ = Mock(return_value=response)
@@ -54,12 +66,12 @@ class PollingTest(unittest.TestCase):
         )
         with (
             patch(
-                "bcn_half.bot.urllib.request.urlopen",
+                "bcn_half.marketplace.urllib.request.urlopen",
                 side_effect=[error, error, response],
             ) as request,
-            patch("bcn_half.bot.time.sleep") as sleep,
+            patch("bcn_half.marketplace.time.sleep") as sleep,
         ):
-            self.assertEqual(bot.fetch("https://example.org"), "available")
+            self.assertEqual(marketplace.fetch("https://example.org"), "available")
         self.assertEqual(request.call_count, 3)
         self.assertEqual([c.args[0] for c in sleep.call_args_list], [10, 20])
 
@@ -67,12 +79,14 @@ class PollingTest(unittest.TestCase):
         error = urllib.error.HTTPError(
             "https://example.org", 503, "unavailable", {}, None
         )
-        with patch("bcn_half.bot.urllib.request.urlopen", side_effect=error) as request:
+        with patch(
+            "bcn_half.marketplace.urllib.request.urlopen", side_effect=error
+        ) as request:
             with (
-                patch("bcn_half.bot.time.sleep"),
+                patch("bcn_half.marketplace.time.sleep"),
                 self.assertRaises(urllib.error.HTTPError),
             ):
-                bot.fetch("https://example.org")
+                marketplace.fetch("https://example.org")
         self.assertEqual(request.call_count, 3)
 
     def test_env_preserves_process_values(self):
@@ -93,13 +107,17 @@ class WorkflowPollingTest(unittest.TestCase):
     def test_five_poll_failures_alert_once_then_recover(self):
         with patch.dict(
             os.environ,
-            {"TELEGRAM_BOT_TOKEN": "fake", "TELEGRAM_CHAT_IDS": "1", "WATCH_URL": "https://example.org"},
+            {
+                "TELEGRAM_BOT_TOKEN": "fake",
+                "TELEGRAM_CHAT_IDS": "1",
+                "WATCH_URL": "https://example.org",
+            },
             clear=True,
         ):
             with (
                 patch("bcn_half.bot.load_env"),
                 patch("sys.argv", ["bcn_half.bot.py"]),
-                patch("bcn_half.bot.send") as send,
+                patch("bcn_half.telegram.send") as send,
             ):
                 with patch(
                     "bcn_half.bot.fetch",
@@ -112,15 +130,17 @@ class WorkflowPollingTest(unittest.TestCase):
                         with self.assertRaises(KeyboardInterrupt):
                             bot.main()
         messages = [call.args[2] for call in send.call_args_list]
-        self.assertEqual(sum("checker BROKEN" in message for message in messages), 1)
-        self.assertTrue(any("checker recovered" in message for message in messages))
-        self.assertIn("every 10s", messages[0])
+        self.assertEqual(sum("Prüfung DEFEKT" in message for message in messages), 1)
+        self.assertTrue(any("Prüfung läuft wieder" in message for message in messages))
+        self.assertIn("alle 10s", messages[0])
 
     def test_application_failure_does_not_break_checker_or_repeat_attempt(self):
         env = {
             "TELEGRAM_BOT_TOKEN": "fake",
             "TELEGRAM_CHAT_IDS": "1",
             "WATCH_URL": "https://example.org",
+            "MAIL_ADDRESSES": "a@example.org",
+            "CAPTCHANO_API_KEY": "key",
         }
         workflow = Mock()
         workflow.select_listing.side_effect = lambda rows: (
@@ -139,7 +159,7 @@ class WorkflowPollingTest(unittest.TestCase):
         ):
             with (
                 patch("bcn_half.bot.import_module", return_value=workflow),
-                patch("bcn_half.bot.send") as send,
+                patch("bcn_half.telegram.send") as send,
             ):
                 with patch("bcn_half.bot.ThreadPoolExecutor", return_value=executor):
                     with patch(
@@ -158,11 +178,63 @@ class WorkflowPollingTest(unittest.TestCase):
         messages = [call.args[2] for call in send.call_args_list]
         self.assertTrue(
             any(
-                "workflow failed for REF2: RuntimeError" in message
+                "Bewerbung für REF2 fehlgeschlagen: RuntimeError" in message
                 for message in messages
             )
         )
-        self.assertFalse(any("checker BROKEN" in message for message in messages))
+        self.assertFalse(any("Prüfung DEFEKT" in message for message in messages))
+
+    def test_submitted_emails_are_not_reused_and_bot_stops_when_exhausted(self):
+        env = {
+            "TELEGRAM_BOT_TOKEN": "fake",
+            "TELEGRAM_CHAT_IDS": "1",
+            "WATCH_URL": "https://example.org",
+            "MAIL_ADDRESSES": "a@example.org, b@example.org",
+            "APPLY": "true",
+            "CAPTCHANO_API_KEY": "key",
+        }
+        workflow = Mock()
+        workflow.select_listing.side_effect = lambda rows: (
+            Mock(reference=rows[0].split(" · ")[0], price="70 €") if rows else None
+        )
+        outcomes = iter([("rejected", False), ("ok", True), ("ok", True)])
+        submitted = []
+
+        def submit(_function, _url, reference, email):
+            submitted.append((reference, email))
+            future = Mock()
+            future.done.return_value = True
+            future.exception.return_value = None
+            future.result.return_value = next(outcomes)
+            return future
+
+        executor = Mock()
+        executor.submit.side_effect = submit
+        rows = "".join(
+            ROW.format(ref, "Half marathon", "70 €") for ref in ("REF1", "REF2", "REF3")
+        )
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("bcn_half.bot.load_env"),
+            patch("sys.argv", ["bcn-half"]),
+            patch("bcn_half.bot.import_module", return_value=workflow),
+            patch("bcn_half.telegram.send") as send,
+            patch("bcn_half.bot.ThreadPoolExecutor", return_value=executor),
+            patch("bcn_half.bot.fetch", return_value=HEAD + rows + TAIL),
+            patch("bcn_half.bot.time.sleep"),
+        ):
+            self.assertEqual(bot.main(), 0)
+        self.assertEqual(
+            submitted,
+            [
+                ("REF1", "a@example.org"),
+                ("REF2", "a@example.org"),
+                ("REF3", "b@example.org"),
+            ],
+        )
+        self.assertIn(
+            "Alle MAIL_ADDRESSES eingereicht", send.call_args_list[-1].args[2]
+        )
 
 
 if __name__ == "__main__":

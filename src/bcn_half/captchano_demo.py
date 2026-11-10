@@ -5,12 +5,12 @@ import json
 import logging
 import re
 from contextlib import suppress
-from datetime import UTC, datetime
 from pathlib import Path
 
 from playwright.sync_api import Error, Page, sync_playwright
 from playwright.sync_api import TimeoutError as BrowserTimeout
 
+from bcn_half.artifacts import close_log, open_artifacts
 from bcn_half.bot import load_env
 from bcn_half.captcha import (
     CAPTCHA_TIMEOUT,
@@ -57,22 +57,56 @@ def _verify_demo(page: Page, solution: dict) -> bool:
         return False
 
 
+def _record_failure(result: dict, error: BaseException) -> None:
+    result["status"] = "failed"
+    result["error"] = failure_reason(error)
+    log.error("CaptchaNo-Demo fehlgeschlagen: %s", result["error"])
+
+
+def _write(folder: Path, result: dict) -> None:
+    (folder / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+
+def _solve_demo(page: Page, folder: Path, result: dict, timeout: int) -> None:
+    try:
+        sitekey = _open_demo(page)
+        page.screenshot(path=str(folder / "before.png"), full_page=True)
+        user_agent = page.evaluate("navigator.userAgent")
+        log.info("Fordere eine CaptchaNo-Lösung für die öffentliche Google-Demo an")
+        solution = request_solution(DEMO_URL, sitekey, user_agent, timeout)
+        result["provider_ready"] = True
+        result["google_accepted"] = _verify_demo(page, solution)
+        result["status"] = (
+            "google-verified" if result["google_accepted"] else "google-rejected"
+        )
+    except (Error, OSError, ValueError, RuntimeError) as error:
+        _record_failure(result, error)
+
+
+def _finish_demo(page: Page, folder: Path, result: dict, keep_open: bool) -> None:
+    _write(folder, result)
+    log.info("Demo-Ergebnis: %s; Nachweise: %s", result["status"], folder)
+    if page.is_closed():
+        return
+    with suppress(Error):
+        page.screenshot(path=str(folder / "result.png"), full_page=True)
+    if keep_open:
+        log.info(
+            "Browser bleibt offen. Prüfen, dann schließen oder im Inspector Resume klicken."
+        )
+        with suppress(Error):
+            page.pause()
+
+
 def run_demo(timeout: int = CAPTCHA_TIMEOUT, keep_open: bool = True) -> bool:
     """Run one public-demo solve and retain its server-verification result."""
-    folder = Path("artifacts") / (
-        "captchano-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    )
-    folder.mkdir(parents=True)
+    folder, handler = open_artifacts("captchano-")
     result = {
         "provider": "captchano",
         "provider_ready": False,
         "google_accepted": False,
-        "status": "starting",
     }
-    handler = logging.FileHandler(folder / "workflow.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
-    log.addHandler(handler)
-    page = None
+    result["status"] = "starting"
     try:
         with (
             sync_playwright() as playwright,
@@ -80,46 +114,14 @@ def run_demo(timeout: int = CAPTCHA_TIMEOUT, keep_open: bool = True) -> bool:
         ):
             page = browser.new_page(locale="en-US")
             try:
-                sitekey = _open_demo(page)
-                page.screenshot(path=str(folder / "before.png"), full_page=True)
-                user_agent = page.evaluate("navigator.userAgent")
-                log.info("Requesting one CaptchaNo solve for the public Google demo")
-                solution = request_solution(DEMO_URL, sitekey, user_agent, timeout)
-                result["provider_ready"] = True
-                result["google_accepted"] = _verify_demo(page, solution)
-                result["status"] = (
-                    "google-verified"
-                    if result["google_accepted"]
-                    else "google-rejected"
-                )
-            except (Error, OSError, ValueError, RuntimeError) as error:
-                result["status"] = "failed"
-                result["error"] = failure_reason(error)
-                log.error("CaptchaNo demo failed: %s", result["error"])
+                _solve_demo(page, folder, result, timeout)
             finally:
-                (folder / "result.json").write_text(
-                    json.dumps(result, indent=2), encoding="utf-8"
-                )
-                log.info("Demo result: %s; evidence: %s", result["status"], folder)
-                if page is not None and not page.is_closed():
-                    with suppress(Error):
-                        page.screenshot(path=str(folder / "result.png"), full_page=True)
-                    if keep_open:
-                        log.info(
-                            "Final browser stays open. Inspect, then close it or click Resume in Playwright Inspector."
-                        )
-                        with suppress(Error):
-                            page.pause()
+                _finish_demo(page, folder, result, keep_open)
     except (Error, OSError, ValueError, RuntimeError) as error:
-        result["status"] = "failed"
-        result["error"] = failure_reason(error)
-        (folder / "result.json").write_text(
-            json.dumps(result, indent=2), encoding="utf-8"
-        )
-        log.error("CaptchaNo demo failed: %s", result["error"])
+        _record_failure(result, error)
+        _write(folder, result)
     finally:
-        log.removeHandler(handler)
-        handler.close()
+        close_log(handler)
     return bool(result["google_accepted"])
 
 

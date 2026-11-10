@@ -1,7 +1,7 @@
 # bcn-half
 
-Watch the Barcelona Half 2027 marketplace and notify Telegram when bibs appear.
-**CaptchaNo is the default and only CAPTCHA solver.** The HTTP checker stays
+Watch the Barcelona Half 2027 marketplace, notify Telegram when bibs appear, and
+optionally request their transfer with your email addresses. **CaptchaNo is the default and only CAPTCHA solver.** The HTTP checker stays
 lightweight; browser workflows request one remote token only when a challenge is
 present. Solvecha's image-selection integration has been removed.
 
@@ -23,31 +23,34 @@ uv run bcn-half
 ```
 
 Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS` (a comma-separated list of chat IDs), and
-`WATCH_URL`. The event URL is required; there is no built-in fallback. Set
-`CAPTCHANO_API_KEY` for browser workflows; the alias `CAPTCHANO_KEY` is also accepted.
+`WATCH_URL`. The event URL is required; there is no built-in fallback.
 Plain `.env` assignments load automatically without replacing values already in the
 process environment. `POLL_SECONDS` is optional and defaults to 10. Notifications
 use the configured URL; `--event-url` explicitly overrides it for a particular run.
 
-The default command checks and notifies only. To open matching half-marathon
-applications and solve encountered challenges on a desktop machine:
+The default command checks and notifies only. To apply for matching half-marathon
+bibs on a desktop machine, set `APPLY=true` in `.env` (or pass `--apply`) together
+with `MAIL_ADDRESSES` (comma-separated) and `CAPTCHANO_API_KEY` (alias
+`CAPTCHANO_KEY`). Applying without both exits with an error.
 
 ```sh
 uv run playwright install chromium
 uv run bcn-half --apply
 ```
 
-`--apply` explicitly permits solver usage and may consume API credits. One browser
-attempt runs at a time while HTTP polling continues. Each reference is attempted
-once per run; restarting can reattempt listed bibs. CaptchaNo receives the actual
-application URL, sitekey, and browser user agent. The returned user agent is matched
-and the token is placed in the application widget without reloading its session.
+Applying consumes CaptchaNo credits. One browser attempt runs at a time while HTTP
+polling continues. Each reference is attempted once per run; restarting can
+reattempt listed bibs. CaptchaNo receives the actual application URL, sitekey, and
+browser user agent; the token is placed in the widget without reloading the session.
+If the solve fails, the CAPTCHA can be completed manually in the visible browser
+for 300 seconds.
 
-**No email, binding application, registration, or payment is submitted.** The
-transfer button is disabled and its POST requests are blocked. `token-ready` means
-CaptchaNo supplied a token; server acceptance on the marketplace is not claimed
-because the workflow stops before submitting that form. A failed solve offers
-manual completion in the visible browser.
+Each new bib gets the first address not yet accepted. The email is submitted only
+once the CAPTCHA is solved or absent. The site's reply modal decides the outcome: a
+`Warning`/error title keeps the address for the next bib, any other title marks it
+used. The site's reply is included in the Telegram message. When every address is
+used, the bot notifies Telegram and exits. The confirmation link arrives by email
+and must be completed within 24 hours; payment is never automated.
 
 HTTP 429 and transient server errors receive at most two retries with exponential
 backoff. The five-failed-polls checker alert and recovery message remain enabled.
@@ -82,10 +85,10 @@ This public-demo submission does not open or submit a marketplace application.
 uv run bcn-half --test-application --event-url "https://inscripciones.rpmsports.es/en/event/zurich-rock-n-roll-running-series-madrid-2027/transfer-registration"
 ```
 
-This selects an exact half-marathon reference, clicks its corresponding **Apply for**
-action, verifies the matching form, and uses CaptchaNo if a challenge is present.
-It never sends an email or purchases a registration. This command can use solver
-credits, so invoke it deliberately.
+**This sends a real transfer request.** It selects an exact half-marathon reference,
+clicks its **Apply for** action, verifies the matching form, solves the CAPTCHA, and
+submits the first address in `MAIL_ADDRESSES`. `CAPTCHANO_API_KEY` is required. It
+exits 0 only when the site accepts the email. No Telegram message is sent.
 
 Both test modes keep the final browser state open until you close it or press
 **Resume** in Playwright Inspector. `--no-keep-open` closes automatically. A failed
@@ -122,6 +125,7 @@ docker compose logs -f
 ```
 
 The image installs the locked package without dev dependencies and runs the
-notification checker. Browser workflows require Chromium and a desktop session.
+notification checker. Applying requires Chromium and a desktop session, so keep
+`APPLY=false` for Docker.
 `.dockerignore` excludes `.env`, environments, and diagnostic artifacts from the
 build context; Compose supplies runtime variables through `env_file: .env`.

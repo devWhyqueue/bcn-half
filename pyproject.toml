@@ -1,7 +1,7 @@
 [project]
 name = "bcn-half"
 version = "0.1.0"
-description = "Watch the Barcelona Half marketplace and open safe bib application workflows"
+description = "Watch the Barcelona Half marketplace, alert via Telegram, and apply for bibs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["playwright==1.60.0"]
@@ -38,3 +38,6 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.pyright]
 include = ["src"]
 pythonVersion = "3.12"
+
+[tool.vulture]
+ignore_names = ["handle_starttag", "handle_endtag", "handle_data"]

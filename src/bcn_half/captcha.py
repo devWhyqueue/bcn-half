@@ -12,7 +12,7 @@ import urllib.request
 from playwright.sync_api import Error, Locator, Page
 from playwright.sync_api import TimeoutError as BrowserTimeout
 
-from bcn_half.bot import UA
+from bcn_half.marketplace import UA
 
 log = logging.getLogger("bcn-half")
 DEMO_URL = "https://www.google.com/recaptcha/api2/demo"
@@ -95,57 +95,55 @@ def _request(key: str, path: str, remaining: float, body: dict | None = None) ->
     return payload
 
 
+def _ready_solution(payload: dict) -> dict | None:
+    """Return a ready solution, None while the task is still solving, or raise."""
+    status = payload.get("status")
+    if status == "ready":
+        solution = payload.get("solution")
+        token = solution.get("token") if isinstance(solution, dict) else None
+        if (
+            not isinstance(solution, dict)
+            or not isinstance(token, str)
+            or len(token) < 100
+        ):
+            raise ValueError("CaptchaNo-Antwort enthält kein brauchbares Token")
+        return solution
+    if status == "failed" or payload.get("error"):
+        raise RuntimeError("CaptchaNo: " + _error_code(payload))
+    task_id = payload.get("id")
+    if (
+        status not in ("queued", "solving")
+        or not isinstance(task_id, str)
+        or not task_id
+    ):
+        raise ValueError("CaptchaNo meldet einen unerwarteten Aufgabenstatus")
+    return None
+
+
 def request_solution(
     url: str, sitekey: str, user_agent: str, timeout: float = CAPTCHA_TIMEOUT
 ) -> dict:
     """Create one solve and poll it within the deadline; never log credentials/tokens."""
     key = os.environ.get("CAPTCHANO_API_KEY") or os.environ.get("CAPTCHANO_KEY")
     if not key:
-        raise ValueError(
-            "Set CAPTCHANO_API_KEY or CAPTCHANO_KEY in the environment/.env"
-        )
+        raise ValueError("CAPTCHANO_API_KEY oder CAPTCHANO_KEY in Umgebung/.env setzen")
     deadline = time.monotonic() + timeout
-    payload = _request(
-        key,
-        "/v1/solve",
-        timeout,
-        {
-            "type": "recaptcha_v2",
-            "url": url,
-            "sitekey": sitekey,
-            "userAgent": user_agent,
-        },
-    )
-    while True:
-        status = payload.get("status")
-        if status == "ready":
-            solution = payload.get("solution")
-            if (
-                not isinstance(solution, dict)
-                or not isinstance(solution.get("token"), str)
-                or len(solution["token"]) < 100
-            ):
-                raise ValueError("CaptchaNo ready response has no usable token")
-            return solution
-        if status == "failed" or payload.get("error"):
-            raise RuntimeError("CaptchaNo: " + _error_code(payload))
-        task_id = payload.get("id")
-        if (
-            status not in ("queued", "solving")
-            or not isinstance(task_id, str)
-            or not task_id
-        ):
-            raise ValueError("CaptchaNo returned an unexpected task state")
+    task = {
+        "type": "recaptcha_v2",
+        "url": url,
+        "sitekey": sitekey,
+        "userAgent": user_agent,
+    }
+    payload = _request(key, "/v1/solve", timeout, task)
+    while (solution := _ready_solution(payload)) is None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError("CaptchaNo deadline reached")
-        log.info("CaptchaNo task is solving; polling again in 5 seconds")
+            raise TimeoutError("CaptchaNo-Frist abgelaufen")
+        log.info("CaptchaNo-Aufgabe läuft; neue Abfrage in 5 Sekunden")
         time.sleep(min(5, remaining))
-        payload = _request(
-            key,
-            "/v1/task/" + urllib.parse.quote(task_id, safe=""),
-            deadline - time.monotonic(),
-        )
+        path = "/v1/task/" + urllib.parse.quote(payload["id"], safe="")
+        payload = _request(key, path, deadline - time.monotonic())
+    return solution
 
 
 def _widget(page: Page) -> Page | Locator:
@@ -170,7 +168,10 @@ def _sitekey(page: Page) -> str:
 
 
 def apply_solution(page: Page, solution: dict) -> None:
-    """Place the token in its widget without calling callbacks or submitting forms."""
+    """Place the token in its widget without calling callbacks or submitting forms.
+
+    The CDP session stays attached because detaching would reset the user-agent override.
+    """
     token = solution.get("token")
     if not isinstance(token, str) or len(token) < 100:
         raise ValueError("CaptchaNo solution has no usable token")
@@ -181,7 +182,6 @@ def apply_solution(page: Page, solution: dict) -> None:
         and user_agent != page.evaluate("navigator.userAgent")
     ):
         session = page.context.new_cdp_session(page)
-        # Detaching resets the override; the browser context owns this session.
         session.send("Network.setUserAgentOverride", {"userAgent": user_agent})
     field = page.locator('#divCaptchaTraspaso [name="g-recaptcha-response"]')
     if not field.count():
@@ -189,13 +189,15 @@ def apply_solution(page: Page, solution: dict) -> None:
     field.evaluate("(field, token) => field.value = token", token)
 
 
-def handle_captcha(page: Page, manual: bool = True) -> str:
-    """Request one CaptchaNo task only when the application has a CAPTCHA widget."""
+def _has_widget(page: Page) -> bool:
     widget = _widget(page)
-    if (
-        not widget.locator(CHALLENGE).count()
-        and not widget.locator("[data-sitekey]:visible").count()
-    ):
+    challenges = widget.locator(CHALLENGE).count()
+    return bool(challenges or widget.locator("[data-sitekey]:visible").count())
+
+
+def handle_captcha(page: Page) -> str:
+    """Request one CaptchaNo task only when the application has a CAPTCHA widget."""
+    if not _has_widget(page):
         return "not-present"
     if page.evaluate(TOKEN_READY) is True:
         return "verified-manually"
@@ -207,10 +209,13 @@ def handle_captcha(page: Page, manual: bool = True) -> str:
         return "token-ready"
     except (Error, OSError, ValueError, RuntimeError) as error:
         log.warning(
-            "CaptchaNo failed (%s): %s", type(error).__name__, failure_reason(error)
+            "CaptchaNo fehlgeschlagen (%s): %s",
+            type(error).__name__,
+            failure_reason(error),
         )
-    if manual:
-        log.warning("Manual CAPTCHA completion is available for %ss", CAPTCHA_TIMEOUT)
-        if wait_verified(page, CAPTCHA_TIMEOUT):
-            return "verified-manually"
-    return "manual-required"
+    log.warning("CAPTCHA kann %ss lang manuell gelöst werden", CAPTCHA_TIMEOUT)
+    return (
+        "verified-manually"
+        if wait_verified(page, CAPTCHA_TIMEOUT)
+        else "manual-required"
+    )

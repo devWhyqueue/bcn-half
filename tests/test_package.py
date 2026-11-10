@@ -34,7 +34,7 @@ def test_console_commands_are_installed():
 
 def test_bot_workflow_imports_packaged_application():
     with patch("bcn_half.bot.import_module") as imported:
-        bot._application("https://example.org", "REF1")
+        bot._application("https://example.org", "REF1", "a@example.org")
     imported.assert_called_once_with("bcn_half.application")
 
 

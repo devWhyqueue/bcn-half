@@ -73,7 +73,7 @@ class CaptchanoTest(unittest.TestCase):
                 "bcn_half.captcha._request",
                 return_value={"status": "ready", "solution": {}},
             ):
-                with self.assertRaisesRegex(ValueError, "token"):
+                with self.assertRaisesRegex(ValueError, "Token"):
                     captcha.request_solution(
                         "https://example.org", "sitekey", "browser-agent", 30
                     )

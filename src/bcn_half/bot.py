@@ -1,109 +1,20 @@
-"""Poll the Barcelona Half MarketPlace page and alert via Telegram when a bib is listed."""
+"""Poll the Barcelona Half marketplace, alert via Telegram, and optionally apply for bibs."""
 
 import argparse
-import json
 import logging
 import os
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from html.parser import HTMLParser
+from concurrent.futures import Future, ThreadPoolExecutor
 from importlib import import_module
 from pathlib import Path
 
-UA = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+from bcn_half.marketplace import fetch, parse_listings
+from bcn_half.telegram import Telegram
+
 FAIL_LIMIT = 5
 
 log = logging.getLogger("bcn-half")
-
-
-class _Listings(HTMLParser):
-    """Collects one string per <tr> in the <tbody> of the table.table-listados."""
-
-    def __init__(self):
-        super().__init__()
-        self.found = False
-        self.rows = []
-        self._table_depth = 0  # >0 while inside the listings table
-        self._in_body = False
-        self._row = None
-        self._cell = None
-
-    def handle_starttag(self, tag, attrs):
-        if self._table_depth:
-            if tag == "table":
-                self._table_depth += 1
-            elif tag == "tbody":
-                self._in_body = True
-            elif tag == "tr" and self._in_body:
-                self._row = []
-            elif tag in ("td", "th") and self._row is not None:
-                self._cell = []
-        elif (
-            tag == "table"
-            and "table-listados" in (dict(attrs).get("class") or "").split()
-        ):
-            self.found = True
-            self._table_depth = 1
-
-    def handle_endtag(self, tag):
-        if not self._table_depth:
-            return
-        if tag == "table":
-            self._table_depth -= 1
-            if not self._table_depth:
-                self._in_body = False
-        elif tag in ("td", "th") and self._cell is not None and self._row is not None:
-            self._row.append(" ".join("".join(self._cell).split()))
-            self._cell = None
-        elif tag == "tr" and self._row is not None:
-            cells = [c for c in self._row if c]
-            if cells:
-                self.rows.append(" · ".join(cells))
-            self._row = None
-
-    def handle_data(self, data):
-        if self._cell is not None:
-            self._cell.append(data)
-
-
-def parse_listings(html: str) -> list[str] | None:
-    """Return listing rows, or None if the table is missing (layout changed)."""
-    p = _Listings()
-    p.feed(html)
-    return p.rows if p.found else None
-
-
-def fetch(url: str) -> str:
-    """Fetch once, retrying transient HTTP failures at most twice with backoff."""
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as error:
-            if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
-                raise
-            delay = 10 * 2**attempt
-            retry_after = error.headers.get("Retry-After", "")
-            if retry_after.isdigit():
-                delay = max(delay, min(int(retry_after), 3600))
-            log.warning("HTTP %s; retry in %ss", error.code, delay)
-            time.sleep(delay)
-    raise RuntimeError("HTTP retry limit reached")
-
-
-def send(token: str, chat_id: str, text: str) -> None:
-    """Send a listing or workflow status to a Telegram chat."""
-    data = urllib.parse.urlencode(
-        {"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"}
-    ).encode()
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    with urllib.request.urlopen(url, data=data, timeout=20) as r:
-        json.load(r)
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -119,36 +30,178 @@ def load_env(path: Path = Path(".env")) -> None:
             os.environ.setdefault(key, value)
 
 
-def _application(url: str, reference: str) -> str:
+def _env_list(name: str) -> list[str]:
+    """Split a comma-separated environment variable into its non-empty values."""
+    return [
+        value.strip() for value in os.environ.get(name, "").split(",") if value.strip()
+    ]
+
+
+def _failure(reference: str, error: BaseException, url: str) -> str:
+    return f"Bewerbung für {reference} fehlgeschlagen: {type(error).__name__}\n{url}"
+
+
+def _application(url: str, reference: str, email: str) -> tuple[str, bool]:
+    """Return the workflow message and whether the site accepted the email."""
     try:
         workflow = import_module("bcn_half.application")
-        result = workflow.run_application(
-            url,
-            reference,
-        )
-        return result.message()
+        result = workflow.run_application(url, reference, email=email)
+        return result.message(), result.status == "email-submitted"
     except (ImportError, OSError, ValueError, RuntimeError) as error:
-        return f"Bib workflow failed for {reference}: {type(error).__name__}\n{url}"
+        return _failure(reference, error, url), False
 
 
-def main() -> int:
-    """Run the checker or one visible, non-submitting browser integration test."""
+class Watcher:
+    """Poll the marketplace, alert Telegram, and apply with unused email addresses."""
+
+    def __init__(
+        self, url: str, telegram: Telegram, emails: list[str], apply: bool
+    ) -> None:
+        self.url, self.telegram, self.emails = url, telegram, emails
+        self.workflow = import_module("bcn_half.application") if apply else None
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.seen: set[str] = set()
+        self.attempted: set[str] = set()
+        self.fails, self.broken = 0, False
+        self.pending: Future[tuple[str, bool]] | None = None
+        self.pending_reference, self.pending_email = "", ""
+
+    def run(self, poll: int) -> int:
+        """Poll until every email address was accepted; alert-only mode never ends."""
+        self.telegram.notify(f"bcn-half beobachtet (alle {poll}s)\n{self.url}")
+        while not self._finish_application():
+            self._poll()
+            time.sleep(poll)
+        self.telegram.notify("Alle MAIL_ADDRESSES eingereicht; bcn-half beendet")
+        return 0
+
+    def _finish_application(self) -> bool:
+        if self.pending is None or not self.pending.done():
+            return False
+        error = self.pending.exception()
+        message, submitted = (
+            (_failure(self.pending_reference, error, self.url), False)
+            if error
+            else self.pending.result()
+        )
+        if submitted:
+            self.emails.remove(self.pending_email)
+        if self.telegram.notify(message) or submitted:
+            self.pending = None
+        return submitted and not self.emails
+
+    def _poll(self) -> None:
+        try:
+            rows = parse_listings(fetch(self.url))
+            if rows is None:
+                raise ValueError("Angebotstabelle nicht gefunden")
+            self._recover()
+            self._alert(rows)
+            self._start_application(rows)
+            log.info("Abfrage ok: %d Angebote", len(rows))
+        except (OSError, ValueError) as e:
+            self.fails += 1
+            log.warning("Abfrage fehlgeschlagen (%d): %s", self.fails, e)
+            if (
+                self.fails >= FAIL_LIMIT or isinstance(e, ValueError)
+            ) and not self.broken:
+                self.broken = self.telegram.notify(f"bcn-half Prüfung DEFEKT: {e}")
+
+    def _recover(self) -> None:
+        self.fails = 0
+        if self.broken:
+            self.broken = False
+            self.telegram.notify("bcn-half Prüfung läuft wieder")
+
+    def _alert(self, rows: list[str]) -> None:
+        """Mark rows seen only after a sent alert; forget delisted rows to re-alert."""
+        new = [r for r in rows if r not in self.seen]
+        if new and self.telegram.notify(
+            "Startplatz gelistet!\n" + "\n".join(new) + f"\n{self.url}"
+        ):
+            self.seen |= set(new)
+        self.seen &= set(rows)
+
+    def _start_application(self, rows: list[str]) -> None:
+        if self.workflow is None or self.pending is not None:
+            return
+        eligible = [row for row in rows if row.split(" · ")[0] not in self.attempted]
+        listing = self.workflow.select_listing(eligible)
+        if listing is None:
+            return
+        self.attempted.add(listing.reference)
+        self.pending_reference, self.pending_email = listing.reference, self.emails[0]
+        self.pending = self.executor.submit(
+            _application, self.url, listing.reference, self.pending_email
+        )
+        self.telegram.notify(
+            f"Bewerbung startet: {listing.reference} · {listing.price}\n{self.url}"
+        )
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--test-application", action="store_true")
+    mode.add_argument(
+        "--test-application",
+        action="store_true",
+        help="Einmal echt bewerben: erste Adresse aus MAIL_ADDRESSES wird abgeschickt",
+    )
     mode.add_argument("--test-captcha", action="store_true")
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Open matching bib applications and solve challenges with CaptchaNo; never submit",
+        help="Passende Startplätze mit MAIL_ADDRESSES beantragen (wie APPLY=true)",
     )
     parser.add_argument("--event-url")
     parser.add_argument(
         "--keep-open",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Keep test final state open for inspection (default); resume in Playwright Inspector",
+        help="Endzustand der Tests offen lassen (Standard); Resume im Playwright Inspector",
     )
+    return parser
+
+
+def _telegram() -> Telegram:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_ids = _env_list("TELEGRAM_CHAT_IDS")
+    if not token or not chat_ids:
+        sys.exit("TELEGRAM_BOT_TOKEN und TELEGRAM_CHAT_IDS müssen gesetzt sein")
+    return Telegram(token, chat_ids)
+
+
+def _poll_seconds() -> int:
+    poll = int(os.environ.get("POLL_SECONDS", "10"))
+    if poll < 1:
+        sys.exit("POLL_SECONDS muss positiv sein")
+    return poll
+
+
+def _test_application(url: str, email: str, keep_open: bool) -> int:
+    workflow = import_module("bcn_half.application")
+    result = workflow.run_application(url, email=email, keep_open=keep_open)
+    log.info("%s", result.message())
+    return 0 if result.status == "email-submitted" else 1
+
+
+def _application_settings(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> tuple[bool, list[str]]:
+    """Return whether to apply and the addresses; applying requires them and CaptchaNo."""
+    apply = args.apply or args.test_application or os.environ.get("APPLY", "") == "true"
+    emails = _env_list("MAIL_ADDRESSES")
+    captchano = os.environ.get("CAPTCHANO_API_KEY") or os.environ.get("CAPTCHANO_KEY")
+    if apply and not (emails and captchano):
+        parser.error(
+            "Zum Bewerben müssen MAIL_ADDRESSES und CAPTCHANO_API_KEY gesetzt sein"
+        )
+    return apply, emails
+
+
+def main() -> int:
+    """Run the watcher, one real application test, or the public CAPTCHA demo."""
+    parser = _parser()
     args = parser.parse_args()
     load_env()
     if args.test_captcha:
@@ -156,97 +209,14 @@ def main() -> int:
         return 0 if demo.run_demo(keep_open=args.keep_open) else 1
     url = (args.event_url or os.environ.get("WATCH_URL") or "").strip()
     if not url:
-        parser.error("WATCH_URL must be set in .env or supplied with --event-url")
+        parser.error(
+            "WATCH_URL muss in .env gesetzt oder per --event-url angegeben werden"
+        )
+    apply, emails = _application_settings(parser, args)
     if args.test_application:
-        workflow = import_module("bcn_half.application")
-        result = workflow.run_application(
-            url,
-            keep_open=args.keep_open,
-        )
-        log.info("%s", result.message())
-        return (
-            0
-            if result.status == "application-ready"
-            and result.captcha != "manual-required"
-            else 1
-        )
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_ids = [
-        c.strip()
-        for c in os.environ.get("TELEGRAM_CHAT_IDS", "").split(",")
-        if c.strip()
-    ]
-    if not token or not chat_ids:
-        sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS must be set")
-    poll = int(os.environ.get("POLL_SECONDS", "10"))
-    if poll < 1:
-        sys.exit("POLL_SECONDS must be positive")
-
-    def notify(text: str) -> bool:
-        """Report success if any configured chat received the message."""
-        # True if any chat got it: one unreachable chat must not re-alert the others every poll
-        sent = False
-        for chat_id in chat_ids:
-            try:
-                send(token, chat_id, text)
-                sent = True
-            except (OSError, ValueError) as error:
-                log.warning("telegram send failed (%s)", type(error).__name__)
-        return sent
-
-    notify(f"bcn-half watching (every {poll}s)\n{url}")
-    workflow = None
-    if args.apply:
-        try:
-            workflow = import_module("bcn_half.application")
-        except ImportError:
-            notify(
-                "Bib workflow unavailable: run uv sync and uv run playwright install chromium; checker continues"
-            )
-    executor = ThreadPoolExecutor(max_workers=1) if workflow else None
-    pending, attempted, pending_reference = None, set(), None
-    seen, fails, broken = set(), 0, False
-    while True:
-        if pending is not None and pending.done():
-            error = pending.exception()
-            message = (
-                f"Bib workflow failed for {pending_reference}: {type(error).__name__}\n{url}"
-                if error
-                else pending.result()
-            )
-            if notify(message):
-                pending = None
-        try:
-            rows = parse_listings(fetch(url))
-            if rows is None:
-                raise ValueError("listings table not found")
-            fails = 0
-            if broken:
-                broken = False
-                notify("bcn-half checker recovered")
-            current = set(rows)
-            new = [r for r in rows if r not in seen]
-            # only mark seen once the alert went out, so a failed send retries next poll
-            if new and notify("Bib listed!\n" + "\n".join(new) + f"\n{url}"):
-                seen |= set(new)
-            if workflow and executor is not None and pending is None:
-                eligible = [row for row in rows if row.split(" · ")[0] not in attempted]
-                listing = workflow.select_listing(eligible)
-                if listing:
-                    attempted.add(listing.reference)
-                    pending_reference = listing.reference
-                    pending = executor.submit(_application, url, listing.reference)
-                    notify(
-                        f"Bib workflow starting: {listing.reference} · {listing.price}\n{url}"
-                    )
-            seen &= current  # relisting alerts again
-            log.info("poll ok: %d listings", len(rows))
-        except (OSError, ValueError) as e:
-            fails += 1
-            log.warning("poll failed (%d): %s", fails, e)
-            if (fails >= FAIL_LIMIT or isinstance(e, ValueError)) and not broken:
-                broken = notify(f"bcn-half checker BROKEN: {e}")
-        time.sleep(poll)
+        return _test_application(url, emails[0], args.keep_open)
+    telegram, poll = _telegram(), _poll_seconds()
+    return Watcher(url, telegram, emails, apply).run(poll)
 
 
 def cli() -> None:
