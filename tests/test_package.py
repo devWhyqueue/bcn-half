@@ -4,7 +4,6 @@ import importlib.metadata
 import io
 import json
 import os
-import time
 from unittest.mock import patch
 
 import pytest
@@ -39,14 +38,28 @@ def test_bot_workflow_imports_packaged_application():
     imported.assert_called_once_with("bcn_half.application")
 
 
-def test_solver_uses_solvecha_endpoint():
-    response = io.BytesIO(json.dumps({"data": [False] * 9}).encode())
-    with patch.dict(os.environ, {"SOLVECHA_API_KEY": "test-key"}, clear=True):
+def test_solver_uses_captchano_endpoint():
+    response = io.BytesIO(
+        json.dumps({"status": "ready", "solution": {"token": "t" * 120}}).encode()
+    )
+    with patch.dict(os.environ, {"CAPTCHANO_API_KEY": "test-key"}, clear=True):
         with patch(
             "bcn_half.captcha.urllib.request.urlopen", return_value=response
         ) as request:
-            captcha._recognize("Select cars", "3x3", b"grid", 9, time.monotonic() + 10)
-    assert (
-        request.call_args.args[0].full_url
-        == "https://api.solvecha.com/v1/recognition/recaptcha?sync=1"
-    )
+            captcha.request_solution(
+                "https://example.org", "sitekey", "browser-agent", 30
+            )
+    assert request.call_args.args[0].full_url == "https://api.captchano.com/v1/solve"
+
+
+@pytest.mark.parametrize("verified, exit_code", [(True, 0), (False, 1)])
+def test_captcha_command_runs_the_captchano_demo(verified, exit_code):
+    with patch("sys.argv", ["bcn-half", "--test-captcha", "--no-keep-open"]):
+        with (
+            patch.object(bot, "load_env"),
+            patch.object(bot, "import_module") as imported,
+        ):
+            imported.return_value.run_demo.return_value = verified
+            assert bot.main() == exit_code
+    imported.assert_called_once_with("bcn_half.captchano_demo")
+    imported.return_value.run_demo.assert_called_once_with(keep_open=False)

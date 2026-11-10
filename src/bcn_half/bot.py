@@ -14,10 +14,6 @@ from html.parser import HTMLParser
 from importlib import import_module
 from pathlib import Path
 
-DEFAULT_URL = (
-    "https://inscripciones.rpmsports.es/en/event/"
-    "hyundai-mitja-marato-barcelona-by-brooks-2027/transfer-registration"
-)
 UA = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 FAIL_LIMIT = 5
 
@@ -129,8 +125,6 @@ def _application(url: str, reference: str) -> str:
         result = workflow.run_application(
             url,
             reference,
-            automatic=os.environ.get("SOLVECHA_LIVE_ENABLED", "false").lower()
-            == "true",
         )
         return result.message()
     except (ImportError, OSError, ValueError, RuntimeError) as error:
@@ -143,6 +137,11 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--test-application", action="store_true")
     mode.add_argument("--test-captcha", action="store_true")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Open matching bib applications and solve challenges with CaptchaNo; never submit",
+    )
     parser.add_argument("--event-url")
     parser.add_argument(
         "--keep-open",
@@ -152,23 +151,19 @@ def main() -> int:
     )
     args = parser.parse_args()
     load_env()
-    url = args.event_url or os.environ.get("WATCH_URL") or DEFAULT_URL
-    if (
-        args.test_application
-        or args.test_captcha
-        or os.environ.get("APPLICATION_TEST_MODE", "false").lower() == "true"
-    ):
+    if args.test_captcha:
+        demo = import_module("bcn_half.captchano_demo")
+        return 0 if demo.run_demo(keep_open=args.keep_open) else 1
+    url = (args.event_url or os.environ.get("WATCH_URL") or "").strip()
+    if not url:
+        parser.error("WATCH_URL must be set in .env or supplied with --event-url")
+    if args.test_application:
         workflow = import_module("bcn_half.application")
         result = workflow.run_application(
             url,
-            demo=args.test_captcha,
-            automatic=args.test_captcha,
-            manual=not args.test_captcha,
             keep_open=args.keep_open,
         )
         log.info("%s", result.message())
-        if args.test_captcha:
-            return 0 if result.captcha == "verified-client-token" else 1
         return (
             0
             if result.status == "application-ready"
@@ -178,11 +173,11 @@ def main() -> int:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_ids = [
         c.strip()
-        for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",")
+        for c in os.environ.get("TELEGRAM_CHAT_IDS", "").split(",")
         if c.strip()
     ]
     if not token or not chat_ids:
-        sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set")
+        sys.exit("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_IDS must be set")
     poll = int(os.environ.get("POLL_SECONDS", "10"))
     if poll < 1:
         sys.exit("POLL_SECONDS must be positive")
@@ -200,9 +195,8 @@ def main() -> int:
         return sent
 
     notify(f"bcn-half watching (every {poll}s)\n{url}")
-    enabled = os.environ.get("APPLICATION_ENABLED", "false").lower() == "true"
     workflow = None
-    if enabled:
+    if args.apply:
         try:
             workflow = import_module("bcn_half.application")
         except ImportError:

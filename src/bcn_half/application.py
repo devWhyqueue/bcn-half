@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import re
 from contextlib import suppress
 from dataclasses import asdict, dataclass
@@ -13,7 +12,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import Error, Page, Route, sync_playwright
 
 from bcn_half.bot import parse_listings
-from bcn_half.captcha import DEMO_URL, TOKEN_READY, failure_reason, handle_captcha
+from bcn_half.captcha import TOKEN_READY, failure_reason, handle_captcha
 
 log = logging.getLogger("bcn-half")
 HALF = re.compile(
@@ -112,7 +111,7 @@ def _open_listing(
     ):
         raise RuntimeError("Application reference did not match")
     page.locator(SUBMIT).evaluate("button => button.disabled = true")
-    page.screenshot(path=str(folder / "bcn_half.application.png"), full_page=True)
+    page.screenshot(path=str(folder / "application.png"), full_page=True)
     result.status = "application-ready"
     return result
 
@@ -128,7 +127,7 @@ def _inspect_result(page: Page, result: ApplicationResult) -> None:
         if not page.is_closed():
             raise
     if not page.is_closed() and page.evaluate(TOKEN_READY) is True:
-        if result.captcha != "verified-client-token":
+        if result.captcha not in ("token-ready", "verified-manually"):
             result.captcha = "verified-manually"
 
 
@@ -136,25 +135,18 @@ def run_application(
     url: str,
     reference: str | None = None,
     *,
-    automatic: bool = False,
-    demo: bool = False,
-    manual: bool = True,
     keep_open: bool = False,
 ) -> ApplicationResult:
     """Run one visible, non-submitting workflow and save screenshots and a result."""
-    if not demo and (
+    if (
         urlsplit(url).scheme != "https"
         or urlsplit(url).netloc != "inscripciones.rpmsports.es"
         or not urlsplit(url).path.endswith("/transfer-registration")
     ):
         raise ValueError("Expected an HTTPS RPM Sports marketplace URL")
-    timeout = int(os.environ.get("CAPTCHA_TIMEOUT_SECONDS", "180"))
-    rounds = int(os.environ.get("CAPTCHA_MAX_ROUNDS", "20"))
-    if not 1 <= timeout <= 600 or not 1 <= rounds <= 50:
-        raise ValueError("CAPTCHA timeout must be 1..600 seconds and rounds 1..50")
     folder = Path("artifacts") / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     folder.mkdir(parents=True)
-    result = ApplicationResult(None, DEMO_URL if demo else url, "browser-starting")
+    result = ApplicationResult(None, url, "browser-starting")
     handler = logging.FileHandler(folder / "workflow.log", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     log.addHandler(handler)
@@ -166,27 +158,15 @@ def run_application(
                 page.set_default_timeout(30000)
                 page.route("**/*", _guard_request)
                 try:
-                    if demo:
-                        page.goto(DEMO_URL, wait_until="domcontentloaded")
-                        page.locator('iframe[title="reCAPTCHA"]').wait_for()
-                        result.status = "demo-opened"
-                    else:
-                        result = _open_listing(page, result, reference, folder)
-                        if (
-                            result.status == "application-ready"
-                            and page.locator("#divCaptchaTraspaso").is_visible()
-                        ):
+                    result = _open_listing(page, result, reference, folder)
+                    if result.status == "application-ready":
+                        if page.locator("#divCaptchaTraspaso").is_visible():
                             page.locator(
                                 '#divCaptchaTraspaso iframe[src*="/anchor"]'
                             ).wait_for()
-                    if demo or result.status == "application-ready":
                         result.captcha = handle_captcha(
                             page,
-                            automatic=automatic,
-                            timeout=timeout,
-                            max_rounds=rounds,
-                            manual=manual and not keep_open,
-                            diagnostics=folder,
+                            manual=not keep_open,
                         )
                     page.screenshot(path=str(folder / "result.png"), full_page=True)
                 except (Error, OSError, ValueError, RuntimeError):

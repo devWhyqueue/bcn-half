@@ -20,6 +20,18 @@ class SelectionTest(unittest.TestCase):
         page.pause.assert_called_once()
         self.assertEqual(result.captcha, "verified-manually")
 
+    def test_final_inspection_keeps_provider_token_distinct_from_manual_verification(
+        self,
+    ):
+        page = Mock()
+        page.is_closed.return_value = False
+        page.evaluate.return_value = True
+        result = application.ApplicationResult(
+            None, "https://example.org", "application-ready", "token-ready"
+        )
+        application._inspect_result(page, result)
+        self.assertEqual(result.captcha, "token-ready")
+
     def test_browser_start_failure_is_reported_and_logged(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch("bcn_half.application.Path", return_value=Path(directory)):

@@ -37,8 +37,12 @@ class ParseTest(unittest.TestCase):
 
 
 class PollingTest(unittest.TestCase):
-    def test_english_default(self):
-        self.assertIn("/en/event/", bot.DEFAULT_URL)
+    def test_watch_url_is_required(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("bcn_half.bot.load_env"), patch("sys.argv", ["bcn-half"]):
+                with self.assertRaises(SystemExit) as stopped:
+                    bot.main()
+        self.assertEqual(stopped.exception.code, 2)
 
     def test_fetch_retries_rate_limit(self):
         response = Mock()
@@ -89,7 +93,7 @@ class WorkflowPollingTest(unittest.TestCase):
     def test_five_poll_failures_alert_once_then_recover(self):
         with patch.dict(
             os.environ,
-            {"TELEGRAM_BOT_TOKEN": "fake", "TELEGRAM_CHAT_ID": "1"},
+            {"TELEGRAM_BOT_TOKEN": "fake", "TELEGRAM_CHAT_IDS": "1", "WATCH_URL": "https://example.org"},
             clear=True,
         ):
             with (
@@ -115,8 +119,8 @@ class WorkflowPollingTest(unittest.TestCase):
     def test_application_failure_does_not_break_checker_or_repeat_attempt(self):
         env = {
             "TELEGRAM_BOT_TOKEN": "fake",
-            "TELEGRAM_CHAT_ID": "1",
-            "APPLICATION_ENABLED": "true",
+            "TELEGRAM_CHAT_IDS": "1",
+            "WATCH_URL": "https://example.org",
         }
         workflow = Mock()
         workflow.select_listing.side_effect = lambda rows: (
@@ -131,7 +135,7 @@ class WorkflowPollingTest(unittest.TestCase):
         with (
             patch.dict(os.environ, env, clear=True),
             patch("bcn_half.bot.load_env"),
-            patch("sys.argv", ["bcn_half.bot.py"]),
+            patch("sys.argv", ["bcn-half", "--apply"]),
         ):
             with (
                 patch("bcn_half.bot.import_module", return_value=workflow),

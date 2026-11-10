@@ -1,1 +1,1 @@
-"""Barcelona Half marketplace watcher with Solvecha CAPTCHA handling."""
+"""Barcelona Half marketplace watcher with CaptchaNo token solving."""
