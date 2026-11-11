@@ -1,4 +1,4 @@
-"""Fetch the RPM Sports marketplace page, parse its listings, and pick a half marathon."""
+"""Fetch the RPM Sports marketplace page, parse its listings, and pick one by price."""
 
 import logging
 import re
@@ -13,10 +13,6 @@ from urllib.parse import urlsplit
 UA = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 log = logging.getLogger("bcn-half")
-HALF = re.compile(
-    r"half[ -]marathon|medio marat[oó]n|media marat[oó]n|mitja marat[oó]|21\s*km",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -119,10 +115,10 @@ def price_value(price: str) -> float:
 def select_listing(
     rows: list[str], reference: str | None = None, max_price: float | None = None
 ) -> Listing | None:
-    """Select a half-marathon row by exact reference, never by position, up to max_price."""
+    """Select a row by exact reference, never by position, up to max_price."""
     for row in rows:
         cells = row.split(" · ")
-        if len(cells) < 3 or not HALF.search(cells[1]):
+        if len(cells) < 3:
             continue
         if reference and cells[0] != reference:
             continue

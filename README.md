@@ -28,7 +28,7 @@ Plain `.env` assignments load automatically without replacing values already in 
 process environment. `POLL_SECONDS` is optional and defaults to 10. Notifications
 use the configured URL; `--event-url` explicitly overrides it for a particular run.
 
-The default command checks and notifies only. To apply for matching half-marathon
+The default command checks and notifies only. To apply for listed
 bibs on a desktop machine, set `APPLY=true` in `.env` (or pass `--apply`) together
 with `MAIL_ADDRESSES` (comma-separated) and `CAPTCHANO_API_KEY` (alias
 `CAPTCHANO_KEY`). Applying without both exits with an error. Optional `MAX_PRICE`
@@ -86,7 +86,7 @@ This public-demo submission does not open or submit a marketplace application.
 uv run bcn-half --test-application --event-url "https://inscripciones.rpmsports.es/en/event/zurich-rock-n-roll-running-series-madrid-2027/transfer-registration"
 ```
 
-**This sends a real transfer request.** It selects an exact half-marathon reference,
+**This sends a real transfer request.** It selects an exact listing reference,
 clicks its **Apply for** action, verifies the matching form, solves the CAPTCHA, and
 submits the first address in `MAIL_ADDRESSES`. `CAPTCHANO_API_KEY` is required. It
 exits 0 only when the site accepts the email. No Telegram message is sent.

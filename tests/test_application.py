@@ -54,17 +54,11 @@ class SelectionTest(unittest.TestCase):
             self.assertIn("application-failed", result.status)
             self.assertEqual(len(list(Path(directory).glob("*/result.json"))), 1)
 
-    def test_selects_half_not_marathon(self):
-        rows = [
-            "REF1 · MARATÓN · 100 € · Apply for",
-            "REF2 · MEDIO MARATÓN · 70 € Detail · Apply for",
-        ]
-        listing = application.select_listing(rows)
-        self.assertEqual(listing.reference, "REF2")
-        self.assertEqual(listing.price, "70 €")
-
-    def test_no_half_marathon(self):
-        self.assertIsNone(application.select_listing(["REF1 · MARATÓN · 100 €"]))
+    def test_selects_any_category(self):
+        rows = ["REF42505 · RACE ENTRY · 50,00 € Detail · Apply for"]
+        listing = application.select_listing(rows, max_price=70)
+        self.assertEqual(listing.reference, "REF42505")
+        self.assertEqual(listing.price, "50,00 €")
 
     def test_matches_reference_exactly(self):
         rows = ["REF21 · Half marathon · 80 €", "REF2 · Half marathon · 70 €"]
