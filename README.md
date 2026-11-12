@@ -1,12 +1,14 @@
 # bcn-half
 
 Watch the Barcelona Half 2027 marketplace, notify Telegram when bibs appear, and
-optionally request their transfer with your email addresses. **CaptchaNo is the default and only CAPTCHA solver.** The HTTP checker stays
-lightweight; browser workflows request one remote token only when a challenge is
-present. Solvecha's image-selection integration has been removed.
+optionally request their transfer with your email addresses. The HTTP checker stays
+lightweight; browser workflows solve a reCAPTCHA only when a challenge is present,
+locally and for free: [PyPasser](https://pypi.org/project/PyPasser/) answers the
+audio challenge with offline Vosk speech recognition in a
+[Patchright](https://pypi.org/project/patchright/) browser. No solver key is needed.
 
 ```text
-src/bcn_half/       watcher, application workflow, CaptchaNo client and demo
+src/bcn_half/       watcher, application workflow, local CAPTCHA solver
 tests/             mocked API tests and local Chromium fixtures
 pyproject.toml     package, commands, dependencies, and tool configuration
 uv.lock            locked runtime and development dependencies
@@ -30,8 +32,8 @@ use the configured URL; `--event-url` explicitly overrides it for a particular r
 
 The default command checks and notifies only. To apply for listed
 bibs on a desktop machine, set `APPLY=true` in `.env` (or pass `--apply`) together
-with `MAIL_ADDRESSES` (comma-separated) and `CAPTCHANO_API_KEY` (alias
-`CAPTCHANO_KEY`). Applying without both exits with an error. Optional `MAX_PRICE`
+with `MAIL_ADDRESSES` (comma-separated). Applying without it exits with an error.
+Optional `MAX_PRICE`
 (euros, e.g. `110` or `110,50`) skips listings that cost more.
 
 ```sh
@@ -39,12 +41,14 @@ uv run patchright install chromium
 uv run bcn-half --apply
 ```
 
-Applying consumes CaptchaNo credits. One browser attempt runs at a time while HTTP
-polling continues. Each reference is attempted once per run; restarting can
-reattempt listed bibs. CaptchaNo receives the actual application URL, sitekey, and
-browser user agent; the token is placed in the widget without reloading the session.
-If the solve fails, the CAPTCHA can be completed manually in the visible browser
-for 300 seconds.
+One browser attempt runs at a time while HTTP polling continues. Each reference is
+attempted once per run; restarting can reattempt listed bibs. Each attempt solves
+the CAPTCHA once (at most three audio clips). The first solve downloads the Vosk
+model (~39 MB) unless it is already cached; the Docker image ships it. Solving needs
+`ffmpeg` on `PATH`. If Google blocks the audio challenge, the attempt is reported
+as `captcha-blocked` with the event link so you can try by hand; a failed solve is
+reported as `captcha-failed`. Neither is retried, and the next bib is attempted
+normally.
 
 Each new bib gets the first address not yet accepted. The email is submitted only
 once the CAPTCHA is solved or absent. The site titles every reply `Warning`, so its
@@ -57,29 +61,6 @@ HTTP 429 and transient server errors receive at most two retries with exponentia
 backoff. The five-failed-polls checker alert and recovery message remain enabled.
 Application and solver failures are reported separately from checker failures.
 
-## Public CAPTCHA demo
-
-Both commands use the same CaptchaNo client:
-
-```sh
-uv run bcn-half --test-captcha
-uv run captchano-demo
-```
-
-The client follows [CaptchaNo's Playwright integration](https://captchano.com/for/playwright).
-It creates one reCAPTCHA v2 task and polls that task every five seconds within a
-fixed 300-second default deadline. There are no image-recognition rounds or
-CAPTCHA environment switches. For a longer public-demo deadline:
-
-```sh
-uv run captchano-demo --timeout 600
-```
-
-The demo submits the returned token only to Google's exact public demo URL using
-synthetic display values. Its illustrative name/email fields remain disabled.
-Success requires Google's **Verification Success** page, not just token injection.
-This public-demo submission does not open or submit a marketplace application.
-
 ## Marketplace test
 
 ```sh
@@ -88,15 +69,15 @@ uv run bcn-half --test-application --event-url "https://inscripciones.rpmsports.
 
 **This sends a real transfer request.** It selects an exact listing reference,
 clicks its **Apply for** action, verifies the matching form, solves the CAPTCHA, and
-submits the first address in `MAIL_ADDRESSES`. `CAPTCHANO_API_KEY` is required. It
+submits the first address in `MAIL_ADDRESSES`. It
 exits 0 only when the site accepts the email. No Telegram message is sent.
 
-Both test modes keep the final browser state open until you close it or press
+The test keeps the final browser state open until you close it or press
 **Resume** in Playwright Inspector. `--no-keep-open` closes automatically. A failed
 test returns a nonzero status. Screenshots, sanitized logs, and token-free JSON
 results go into timestamped `artifacts/` directories, which remain gitignored.
 `automated-result.json` preserves the marketplace result before inspection;
-subsequent manual completion is recorded separately in `result.json`.
+the state after inspection is recorded separately in `result.json`.
 Each attempt also saves `submit-response.txt` (raw server reply to the submit POST)
 and `submitted.html`. `--test-application` additionally records `trace.zip` (open
 with `uv run patchright show-trace`); it contains the submitted email and the spent
@@ -118,7 +99,7 @@ uv build
 ```
 
 Tests block live HTTP requests from the application's clients. Browser fixtures
-use local content and do not consume solver credits. CLI `--help` avoids loading
+use local content and never contact Google. CLI `--help` avoids loading
 `.env`. `uv run python -m bcn_half` is equivalent to the installed watcher command.
 
 ## Docker
@@ -130,9 +111,8 @@ docker compose logs -f
 
 The image installs the locked package without dev dependencies, Playwright's
 Chromium, and Xvfb. The watcher runs under `xvfb-run`, so `APPLY=true` works on
-headless hosts (amd64 or arm64) with the same headed browser as on a desktop. The
-manual CAPTCHA fallback cannot be used there: a failed solve waits 300 seconds and
-reports `manual-required`. Compose sets `shm_size: 1gb` for Chromium and `init: true`
+headless hosts (amd64 or arm64) with the same headed browser as on a desktop.
+Compose sets `shm_size: 1gb` for Chromium and `init: true`
 so `docker stop` shuts down cleanly. Diagnostic `artifacts/` stay inside the
 container and are lost on rebuild.
 `.dockerignore` excludes `.env`, environments, and diagnostic artifacts from the

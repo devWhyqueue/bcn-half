@@ -1,4 +1,4 @@
-"""Keep all tests independent of live HTTP services and solver credits."""
+"""Keep all tests independent of live HTTP services."""
 
 import urllib.request
 

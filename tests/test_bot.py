@@ -48,13 +48,19 @@ class PollingTest(unittest.TestCase):
         env = {
             "WATCH_URL": "https://example.org",
             "APPLY": "true",
-            "CAPTCHANO_API_KEY": "k",
         }
         with patch.dict(os.environ, env, clear=True):
             with patch("bcn_half.bot.load_env"), patch("sys.argv", ["bcn-half"]):
                 with self.assertRaises(SystemExit) as stopped:
                     bot.main()
         self.assertEqual(stopped.exception.code, 2)
+
+    def test_apply_needs_no_captcha_key(self):
+        env = {"APPLY": "true", "MAIL_ADDRESSES": "a@example.org"}
+        with patch.dict(os.environ, env, clear=True):
+            parser = bot._parser()
+            settings = bot._application_settings(parser, parser.parse_args([]))
+        self.assertEqual(settings, (True, ["a@example.org"]))
 
     def test_fetch_retries_rate_limit(self):
         response = Mock()
@@ -140,7 +146,6 @@ class WorkflowPollingTest(unittest.TestCase):
             "TELEGRAM_CHAT_IDS": "1",
             "WATCH_URL": "https://example.org",
             "MAIL_ADDRESSES": "a@example.org",
-            "CAPTCHANO_API_KEY": "key",
         }
         workflow = Mock()
         workflow.select_listing.side_effect = lambda rows, **_: (
@@ -191,7 +196,6 @@ class WorkflowPollingTest(unittest.TestCase):
             "WATCH_URL": "https://example.org",
             "MAIL_ADDRESSES": "a@example.org, b@example.org",
             "APPLY": "true",
-            "CAPTCHANO_API_KEY": "key",
         }
         workflow = Mock()
         workflow.select_listing.side_effect = lambda rows, **_: (

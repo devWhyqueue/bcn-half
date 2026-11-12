@@ -134,6 +134,10 @@ def _apply(
     result.captcha = handle_captcha(page)
     if result.captcha in SUBMITTABLE:
         _submit_email(page, result, folder)
+    elif result.captcha == "google-blocked":
+        result.status = "captcha-blocked"
+    else:
+        result.status = "captcha-failed"
 
 
 def _inspect_result(page: Page, result: ApplicationResult) -> None:

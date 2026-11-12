@@ -1,1 +1,1 @@
-"""Barcelona Half marketplace watcher with CaptchaNo token solving."""
+"""Barcelona Half marketplace watcher with local reCAPTCHA solving."""

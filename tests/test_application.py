@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, Mock, patch
 from patchright.sync_api import Error
 
 from bcn_half import application
+from bcn_half.marketplace import Listing
 
 
 class SelectionTest(unittest.TestCase):
@@ -16,7 +17,7 @@ class SelectionTest(unittest.TestCase):
             "https://example.org",
             "demo-opened",
             "a@example.org",
-            "manual-required",
+            "solve-failed",
         )
         page.is_closed.return_value = False
         page.evaluate.return_value = True
@@ -24,7 +25,7 @@ class SelectionTest(unittest.TestCase):
         page.pause.assert_called_once()
         self.assertEqual(result.captcha, "verified-manually")
 
-    def test_final_inspection_keeps_provider_token_distinct_from_manual_verification(
+    def test_final_inspection_keeps_solver_token_distinct_from_manual_verification(
         self,
     ):
         page = Mock()
@@ -105,3 +106,34 @@ class SelectionTest(unittest.TestCase):
             self.assertEqual(result.status, status)
             self.assertIn("a@example.org", result.message())
             self.assertIn(f"Warning: {body}", result.message())
+
+    def _apply_with_captcha(self, outcome):
+        def find(page, result, reference):
+            result.listing = Listing("REF1", "RACE ENTRY", "50,00 €")
+
+        def open_form(page, result, listing):
+            result.status = "application-ready"
+
+        result = application.ApplicationResult(
+            None, "https://example.org/event", "browser-starting", "a@example.org"
+        )
+        with (
+            patch("bcn_half.application._find_listing", side_effect=find),
+            patch("bcn_half.application._open_form", side_effect=open_form),
+            patch("bcn_half.application.handle_captcha", return_value=outcome),
+            patch("bcn_half.application._submit_email") as submit,
+        ):
+            application._apply(MagicMock(), result, None, Path("."))
+        submit.assert_not_called()
+        return result
+
+    def test_blocked_captcha_is_reported_not_submitted(self):
+        result = self._apply_with_captcha("google-blocked")
+        self.assertEqual(result.status, "captcha-blocked")
+        self.assertIn(result.event_url, result.message())
+        self.assertIn("google-blocked", result.message())
+
+    def test_failed_captcha_is_reported_not_submitted(self):
+        result = self._apply_with_captcha("solve-failed")
+        self.assertEqual(result.status, "captcha-failed")
+        self.assertIn(result.event_url, result.message())

@@ -147,13 +147,11 @@ class Watcher:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
+    parser.add_argument(
         "--test-application",
         action="store_true",
         help="Einmal echt bewerben: erste Adresse aus MAIL_ADDRESSES wird abgeschickt",
     )
-    mode.add_argument("--test-captcha", action="store_true")
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -204,25 +202,19 @@ def _test_application(url: str, email: str, keep_open: bool) -> int:
 def _application_settings(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> tuple[bool, list[str]]:
-    """Return whether to apply and the addresses; applying requires them and CaptchaNo."""
+    """Return whether to apply and the addresses; applying requires addresses."""
     apply = args.apply or args.test_application or os.environ.get("APPLY", "") == "true"
     emails = _env_list("MAIL_ADDRESSES")
-    captchano = os.environ.get("CAPTCHANO_API_KEY") or os.environ.get("CAPTCHANO_KEY")
-    if apply and not (emails and captchano):
-        parser.error(
-            "Zum Bewerben müssen MAIL_ADDRESSES und CAPTCHANO_API_KEY gesetzt sein"
-        )
+    if apply and not emails:
+        parser.error("Zum Bewerben muss MAIL_ADDRESSES gesetzt sein")
     return apply, emails
 
 
 def main() -> int:
-    """Run the watcher, one real application test, or the public CAPTCHA demo."""
+    """Run the watcher or one real application test."""
     parser = _parser()
     args = parser.parse_args()
     load_env()
-    if args.test_captcha:
-        demo = import_module("bcn_half.captchano_demo")
-        return 0 if demo.run_demo(keep_open=args.keep_open) else 1
     url = (args.event_url or os.environ.get("WATCH_URL") or "").strip()
     if not url:
         parser.error(

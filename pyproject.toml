@@ -5,12 +5,13 @@ description = "Watch the Barcelona Half marketplace, alert via Telegram, and app
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "audioop-lts>=0.2.2 ; python_full_version >= '3.13'",
     "patchright==1.64.4",
+    "pypasser[speech,vision]==1.1.0",
 ]
 
 [project.scripts]
 bcn-half = "bcn_half.bot:cli"
-captchano-demo = "bcn_half.captchano_demo:cli"
 
 [dependency-groups]
 dev = [
@@ -42,4 +43,12 @@ include = ["src"]
 pythonVersion = "3.12"
 
 [tool.vulture]
-ignore_names = ["handle_starttag", "handle_endtag", "handle_data"]
+ignore_names = [
+    "handle_starttag",
+    "handle_endtag",
+    "handle_data",
+    # PyPasser selector overrides in captcha.configure_solver
+    "CHECKBOX_FRAME",
+    "AUDIO_FRAME",
+    "TOKEN_SELECTORS",
+]
