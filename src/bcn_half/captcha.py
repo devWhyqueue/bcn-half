@@ -4,7 +4,7 @@ import logging
 import os
 
 from patchright.sync_api import Error, Locator, Page
-from pypasser.captcha import recaptcha
+from pypasser.browsers.playwright import PlaywrightAdapter
 from pypasser.captcha.recaptcha.v2 import flow
 from pypasser.exceptions import IpBlock, PyPasserError
 
@@ -42,6 +42,14 @@ def configure_solver() -> None:
     flow.TOKEN_SELECTORS = ("#divCaptchaTraspaso [name='g-recaptcha-response']",)
 
 
+class _BoundedAdapter(PlaywrightAdapter):
+    def attr(
+        self, css: str, attribute: str, frame: str | None = None, timeout: float = 10
+    ) -> str | None:
+        """Bound PyPasser's timeout=0 checks; Playwright reads 0 as "wait forever"."""
+        return super().attr(css, attribute, frame, timeout or 0.1)
+
+
 def _widget(page: Page) -> Page | Locator:
     transfer = page.locator("#divCaptchaTraspaso")
     return transfer if transfer.count() else page
@@ -61,7 +69,7 @@ def handle_captcha(page: Page) -> str:
         return "verified-manually"
     configure_solver()
     try:
-        solved = recaptcha.v2.solve(page, backend="patchright").is_solved
+        solved = flow.V2Solver().solve(_BoundedAdapter(page)).is_solved
     except IpBlock:
         log.warning("Google hat die CAPTCHA-Audioaufgabe blockiert")
         return "google-blocked"
