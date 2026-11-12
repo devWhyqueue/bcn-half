@@ -109,8 +109,9 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The image installs the locked package without dev dependencies, Playwright's
-Chromium, and Xvfb. The watcher runs under `xvfb-run`, so `APPLY=true` works on
+The image installs the locked package without dev dependencies, Patchright's
+Chromium, Xvfb, ffmpeg, and the Vosk speech model, so solving needs no download at
+runtime. The watcher runs under `xvfb-run`, so `APPLY=true` works on
 headless hosts (amd64 or arm64) with the same headed browser as on a desktop.
 Compose sets `shm_size: 1gb` for Chromium and `init: true`
 so `docker stop` shuts down cleanly. Diagnostic `artifacts/` stay inside the
