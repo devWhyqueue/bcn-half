@@ -7,8 +7,8 @@ import re
 from contextlib import suppress
 from pathlib import Path
 
-from playwright.sync_api import Error, Page, sync_playwright
-from playwright.sync_api import TimeoutError as BrowserTimeout
+from patchright.sync_api import Error, Page, sync_playwright
+from patchright.sync_api import TimeoutError as BrowserTimeout
 
 from bcn_half.artifacts import close_log, open_artifacts
 from bcn_half.bot import load_env

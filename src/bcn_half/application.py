@@ -8,8 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Browser, Error, Page, Response, sync_playwright
-from playwright.sync_api import TimeoutError as BrowserTimeout
+from patchright.sync_api import Browser, Error, Page, Response, sync_playwright
+from patchright.sync_api import TimeoutError as BrowserTimeout
 
 from bcn_half.artifacts import close_log, open_artifacts
 from bcn_half.captcha import TOKEN_READY, failure_reason, handle_captcha

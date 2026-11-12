@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
-from playwright.sync_api import TimeoutError as BrowserTimeout
+from patchright.sync_api import TimeoutError as BrowserTimeout
 
 from bcn_half import captchano_demo
 from bcn_half.captcha import DEMO_URL

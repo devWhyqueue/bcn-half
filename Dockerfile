@@ -9,7 +9,7 @@ RUN uv sync --locked --no-dev --no-install-project
 # so it runs on an Xvfb virtual display; this layer stays cached across src changes.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb xauth \
-    && playwright install --with-deps --no-shell chromium \
+    && patchright install --with-deps --no-shell chromium \
     && rm -rf /var/lib/apt/lists/*
 COPY src ./src
 RUN uv sync --locked --no-dev --no-editable

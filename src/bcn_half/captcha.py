@@ -9,8 +9,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from playwright.sync_api import Error, Locator, Page
-from playwright.sync_api import TimeoutError as BrowserTimeout
+from patchright.sync_api import Error, Locator, Page
+from patchright.sync_api import TimeoutError as BrowserTimeout
 
 from bcn_half.marketplace import UA
 

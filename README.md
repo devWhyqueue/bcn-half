@@ -35,7 +35,7 @@ with `MAIL_ADDRESSES` (comma-separated) and `CAPTCHANO_API_KEY` (alias
 (euros, e.g. `110` or `110,50`) skips listings that cost more.
 
 ```sh
-uv run playwright install chromium
+uv run patchright install chromium
 uv run bcn-half --apply
 ```
 
@@ -99,7 +99,7 @@ results go into timestamped `artifacts/` directories, which remain gitignored.
 subsequent manual completion is recorded separately in `result.json`.
 Each attempt also saves `submit-response.txt` (raw server reply to the submit POST)
 and `submitted.html`. `--test-application` additionally records `trace.zip` (open
-with `uv run playwright show-trace`); it contains the submitted email and the spent
+with `uv run patchright show-trace`); it contains the submitted email and the spent
 CAPTCHA token. Credentials are never printed or saved. Tests send no Telegram
 notifications.
 

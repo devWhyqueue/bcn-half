@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Watch the Barcelona Half marketplace, alert via Telegram, and apply for bibs"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["playwright==1.60.0"]
+dependencies = [
+    "patchright==1.64.4",
+]
 
 [project.scripts]
 bcn-half = "bcn_half.bot:cli"

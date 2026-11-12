@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from playwright.sync_api import Error
+from patchright.sync_api import Error
 
 from bcn_half import application
 
