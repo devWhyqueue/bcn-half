@@ -41,6 +41,13 @@ uv run patchright install chromium
 uv run bcn-half --apply
 ```
 
+HTTP polling reuses its connection and requests gzip compression. In apply mode,
+one browser starts warming up immediately and stays open between attempts. Its
+single worker owns the application page; HTTP polling never navigates or reloads
+that page, including while an application is running. Applications are dispatched
+before Telegram listing or recovery notifications. The browser and polling
+connection close when the watcher exits.
+
 One browser attempt runs at a time while HTTP polling continues. Each reference is
 attempted once per run; restarting can reattempt listed bibs. Each attempt solves
 the CAPTCHA once (at most three audio clips). The first solve downloads the Vosk

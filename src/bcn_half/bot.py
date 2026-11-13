@@ -9,7 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from importlib import import_module
 from pathlib import Path
 
-from bcn_half.marketplace import fetch, parse_listings
+from bcn_half.marketplace import MarketplaceClient, parse_listings, select_listing
 from bcn_half.telegram import Telegram
 
 FAIL_LIMIT = 5
@@ -41,16 +41,6 @@ def _failure(reference: str, error: BaseException, url: str) -> str:
     return f"Bewerbung für {reference} fehlgeschlagen: {type(error).__name__}\n{url}"
 
 
-def _application(url: str, reference: str, email: str) -> tuple[str, bool]:
-    """Return the workflow message and whether the site accepted the email."""
-    try:
-        workflow = import_module("bcn_half.application")
-        result = workflow.run_application(url, reference, email=email)
-        return result.message(), result.status == "email-submitted"
-    except (ImportError, OSError, ValueError, RuntimeError) as error:
-        return _failure(reference, error, url), False
-
-
 class Watcher:
     """Poll the marketplace, alert Telegram, and apply with unused email addresses."""
 
@@ -63,8 +53,11 @@ class Watcher:
         max_price: float | None = None,
     ) -> None:
         self.url, self.telegram, self.emails = url, telegram, emails
+        self.client = MarketplaceClient(url)
         self.max_price = max_price
-        self.workflow = import_module("bcn_half.application") if apply else None
+        self.application = (
+            import_module("bcn_half.browser").ApplicationBrowser(url) if apply else None
+        )
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.seen: set[str] = set()
         self.attempted: set[str] = set()
@@ -74,12 +67,25 @@ class Watcher:
 
     def run(self, poll: int) -> int:
         """Poll until every email address was accepted; alert-only mode never ends."""
-        self.telegram.notify(f"bcn-half beobachtet (alle {poll}s)\n{self.url}")
-        while not self._finish_application():
-            self._poll()
-            time.sleep(poll)
-        self.telegram.notify("Alle MAIL_ADDRESSES eingereicht; bcn-half beendet")
-        return 0
+        try:
+            if self.application is not None:
+                self.executor.submit(self.application.prepare)
+            self.telegram.notify(f"bcn-half beobachtet (alle {poll}s)\n{self.url}")
+            while not self._finish_application():
+                self._poll()
+                time.sleep(poll)
+            self.telegram.notify("Alle MAIL_ADDRESSES eingereicht; bcn-half beendet")
+            return 0
+        finally:
+            self._close()
+
+    def _close(self) -> None:
+        try:
+            if self.application is not None:
+                self.executor.submit(self.application.close).result()
+        finally:
+            self.executor.shutdown(wait=True)
+            self.client.close()
 
     def _finish_application(self) -> bool:
         if self.pending is None or not self.pending.done():
@@ -98,12 +104,12 @@ class Watcher:
 
     def _poll(self) -> None:
         try:
-            rows = parse_listings(fetch(self.url))
+            rows = parse_listings(self.client.fetch())
             if rows is None:
                 raise ValueError("Angebotstabelle nicht gefunden")
+            self._start_application(rows)
             self._recover()
             self._alert(rows)
-            self._start_application(rows)
             log.info("Abfrage ok: %d Angebote", len(rows))
         except (OSError, ValueError) as e:
             self.fails += 1
@@ -129,16 +135,16 @@ class Watcher:
         self.seen &= set(rows)
 
     def _start_application(self, rows: list[str]) -> None:
-        if self.workflow is None or self.pending is not None:
+        if self.application is None or self.pending is not None:
             return
         eligible = [row for row in rows if row.split(" · ")[0] not in self.attempted]
-        listing = self.workflow.select_listing(eligible, max_price=self.max_price)
+        listing = select_listing(eligible, max_price=self.max_price)
         if listing is None:
             return
         self.attempted.add(listing.reference)
         self.pending_reference, self.pending_email = listing.reference, self.emails[0]
         self.pending = self.executor.submit(
-            _application, self.url, listing.reference, self.pending_email
+            self.application.apply, listing.reference, self.pending_email
         )
         self.telegram.notify(
             f"Bewerbung startet: {listing.reference} · {listing.price}\n{self.url}"

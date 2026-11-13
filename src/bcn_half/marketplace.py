@@ -1,14 +1,16 @@
 """Fetch the RPM Sports marketplace page, parse its listings, and pick one by price."""
 
+import gzip
+import http.client
 import logging
 import re
 import time
 import urllib.error
-import urllib.request
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import override
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 UA = "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
@@ -88,23 +90,89 @@ def parse_listings(html: str) -> list[str] | None:
     return p.rows if p.found else None
 
 
-def fetch(url: str) -> str:
-    """Fetch once, retrying transient HTTP failures at most twice with backoff."""
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as error:
+class MarketplaceClient:
+    """Reuse one polling connection, reconnecting stale sockets and honoring backoff."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self._connect(url)
+
+    def _connect(self, url: str) -> None:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError("HTTP- oder HTTPS-URL erwartet")
+        self.origin = (parts.scheme, parts.netloc)
+        connection = (
+            http.client.HTTPSConnection
+            if parts.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        self.connection = connection(parts.hostname, parts.port, timeout=20)
+
+    def _read_response(self) -> tuple[http.client.HTTPResponse, bytes]:
+        response = self.connection.getresponse()
+        body = response.read()
+        if response.status < 300 and response.getheader("Content-Encoding") == "gzip":
+            body = gzip.decompress(body)
+        return response, body
+
+    def _request(self, url: str) -> tuple[http.client.HTTPResponse, bytes]:
+        parts = urlsplit(url)
+        if (parts.scheme, parts.netloc) != self.origin:
+            self.close()
+            self._connect(url)
+        path = urlunsplit(("", "", parts.path or "/", parts.query, ""))
+        for attempt in range(2):
+            try:
+                self.connection.request(
+                    "GET",
+                    path,
+                    headers={"User-Agent": UA, "Accept-Encoding": "gzip"},
+                )
+                return self._read_response()
+            except (OSError, EOFError, zlib.error, http.client.HTTPException) as error:
+                self.close()
+                if attempt:
+                    raise OSError("Marketplace-Verbindung fehlgeschlagen") from error
+        raise RuntimeError("HTTP-Verbindung fehlgeschlagen")
+
+    def _follow_redirects(self) -> tuple[http.client.HTTPResponse, bytes]:
+        url = self.url
+        for redirect in range(6):
+            response, body = self._request(url)
+            location = response.getheader("Location")
+            if (
+                response.status not in (301, 302, 303, 307, 308)
+                or not location
+                or redirect == 5
+            ):
+                return response, body
+            url = urljoin(url, location)
+        raise RuntimeError("HTTP-Weiterleitungslimit erreicht")
+
+    def fetch(self) -> str:
+        """Fetch listings, retrying transient HTTP errors at most twice with backoff."""
+        for attempt in range(3):
+            response, body = self._follow_redirects()
+            if response.status < 300:
+                return body.decode("utf-8", "replace")
+            error = urllib.error.HTTPError(
+                self.url, response.status, response.reason, response.headers, None
+            )
+            self.close()
             if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
-                raise
+                raise error
             delay = 10 * 2**attempt
-            retry_after = error.headers.get("Retry-After", "")
+            retry_after = response.getheader("Retry-After", "")
             if retry_after.isdigit():
                 delay = max(delay, min(int(retry_after), 3600))
             log.warning("HTTP %s; neuer Versuch in %ss", error.code, delay)
             time.sleep(delay)
-    raise RuntimeError("HTTP-Wiederholungslimit erreicht")
+        raise RuntimeError("HTTP-Wiederholungslimit erreicht")
+
+    def close(self) -> None:
+        """Release the polling connection."""
+        self.connection.close()
 
 
 def price_value(price: str) -> float:

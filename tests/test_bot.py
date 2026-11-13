@@ -1,11 +1,10 @@
 import os
 import tempfile
 import unittest
-import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bcn_half import bot, marketplace
+from bcn_half import bot
 from bcn_half.marketplace import parse_listings
 
 HEAD = """<html><body><table class="other"><tbody><tr><td>x</td></tr></tbody></table>
@@ -62,39 +61,6 @@ class PollingTest(unittest.TestCase):
             settings = bot._application_settings(parser, parser.parse_args([]))
         self.assertEqual(settings, (True, ["a@example.org"]))
 
-    def test_fetch_retries_rate_limit(self):
-        response = Mock()
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-        response.read.return_value = b"available"
-        error = urllib.error.HTTPError(
-            "https://example.org", 429, "rate limit", {}, None
-        )
-        with (
-            patch(
-                "bcn_half.marketplace.urllib.request.urlopen",
-                side_effect=[error, error, response],
-            ) as request,
-            patch("bcn_half.marketplace.time.sleep") as sleep,
-        ):
-            self.assertEqual(marketplace.fetch("https://example.org"), "available")
-        self.assertEqual(request.call_count, 3)
-        self.assertEqual([c.args[0] for c in sleep.call_args_list], [10, 20])
-
-    def test_fetch_retries_are_bounded(self):
-        error = urllib.error.HTTPError(
-            "https://example.org", 503, "unavailable", {}, None
-        )
-        with patch(
-            "bcn_half.marketplace.urllib.request.urlopen", side_effect=error
-        ) as request:
-            with (
-                patch("bcn_half.marketplace.time.sleep"),
-                self.assertRaises(urllib.error.HTTPError),
-            ):
-                marketplace.fetch("https://example.org")
-        self.assertEqual(request.call_count, 3)
-
     def test_env_preserves_process_values(self):
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -126,7 +92,7 @@ class WorkflowPollingTest(unittest.TestCase):
                 patch("bcn_half.telegram.send") as send,
             ):
                 with patch(
-                    "bcn_half.bot.fetch",
+                    "bcn_half.bot.MarketplaceClient.fetch",
                     side_effect=[OSError("offline")] * 5 + [HEAD + TAIL],
                 ):
                     with patch(
@@ -148,9 +114,6 @@ class WorkflowPollingTest(unittest.TestCase):
             "MAIL_ADDRESSES": "a@example.org",
         }
         workflow = Mock()
-        workflow.select_listing.side_effect = lambda rows, **_: (
-            Mock(reference="REF2", price="70 €") if rows else None
-        )
         future = Mock()
         future.done.return_value = True
         future.exception.return_value = RuntimeError("browser failed")
@@ -168,7 +131,7 @@ class WorkflowPollingTest(unittest.TestCase):
             ):
                 with patch("bcn_half.bot.ThreadPoolExecutor", return_value=executor):
                     with patch(
-                        "bcn_half.bot.fetch",
+                        "bcn_half.bot.MarketplaceClient.fetch",
                         return_value=HEAD
                         + ROW.format("REF2", "Half marathon", "70 €")
                         + TAIL,
@@ -179,7 +142,7 @@ class WorkflowPollingTest(unittest.TestCase):
                         ):
                             with self.assertRaises(KeyboardInterrupt):
                                 bot.main()
-        executor.submit.assert_called_once()
+        self.assertEqual(executor.submit.call_count, 3)
         messages = [call.args[2] for call in send.call_args_list]
         self.assertTrue(
             any(
@@ -198,13 +161,13 @@ class WorkflowPollingTest(unittest.TestCase):
             "APPLY": "true",
         }
         workflow = Mock()
-        workflow.select_listing.side_effect = lambda rows, **_: (
-            Mock(reference=rows[0].split(" · ")[0], price="70 €") if rows else None
-        )
         outcomes = iter([("rejected", False), ("ok", True), ("ok", True)])
         submitted = []
 
-        def submit(_function, _url, reference, email):
+        def submit(_function, *args):
+            if not args:
+                return Mock()
+            reference, email = args
             submitted.append((reference, email))
             future = Mock()
             future.done.return_value = True
@@ -224,7 +187,9 @@ class WorkflowPollingTest(unittest.TestCase):
             patch("bcn_half.bot.import_module", return_value=workflow),
             patch("bcn_half.telegram.send") as send,
             patch("bcn_half.bot.ThreadPoolExecutor", return_value=executor),
-            patch("bcn_half.bot.fetch", return_value=HEAD + rows + TAIL),
+            patch(
+                "bcn_half.bot.MarketplaceClient.fetch", return_value=HEAD + rows + TAIL
+            ),
             patch("bcn_half.bot.time.sleep"),
         ):
             self.assertEqual(bot.main(), 0)

@@ -102,7 +102,6 @@ def _record_reply(page: Page, response: Response, folder: Path) -> None:
 
 
 def _submit_email(page: Page, result: ApplicationResult, folder: Path) -> None:
-    """Submit the email once and classify the site's reply from its message modal."""
     page.locator(EMAIL).fill(result.email)
     with page.expect_response(_is_site_post) as response:
         page.locator(SUBMIT).click()
@@ -225,17 +224,21 @@ def run_application(
     email: str,
     keep_open: bool = False,
     trace: bool = False,
+    page: Page | None = None,
 ) -> ApplicationResult:
-    """Run one visible workflow that submits the email; save screenshots and a result."""
+    """Submit an email with diagnostics, optionally reusing a worker-owned page."""
     check_url(url)
     folder, handler = open_artifacts()
     result = ApplicationResult(None, url, "browser-starting", email)
     try:
-        with (
-            sync_playwright() as playwright,
-            playwright.chromium.launch(headless=False) as browser,
-        ):
-            _run_in_context(browser, result, reference, folder, keep_open, trace)
+        if page is not None:
+            _run_in_browser(page, result, reference, folder, keep_open)
+        else:
+            with (
+                sync_playwright() as playwright,
+                playwright.chromium.launch(headless=False) as browser,
+            ):
+                _run_in_context(browser, result, reference, folder, keep_open, trace)
     except FAILURES as error:
         if result.status != "browser-closed":
             result.status = (

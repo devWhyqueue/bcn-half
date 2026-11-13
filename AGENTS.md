@@ -1,2 +1,3 @@
 - After every code change, run /clean-code skill.
 - If asked to commit, keep it on main branch.
+- Deployment details about this app can be found in ../oci-apps.

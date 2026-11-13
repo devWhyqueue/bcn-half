@@ -1,7 +1,7 @@
 """Check installed commands without loading secrets or making network requests."""
 
 import importlib.metadata
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -28,7 +28,9 @@ def test_console_commands_are_installed():
     assert commands == {"bcn-half": "bcn_half.bot:cli"}
 
 
-def test_bot_workflow_imports_packaged_application():
+def test_bot_workflow_imports_packaged_browser():
     with patch("bcn_half.bot.import_module") as imported:
-        bot._application("https://example.org", "REF1", "a@example.org")
-    imported.assert_called_once_with("bcn_half.application")
+        watcher = bot.Watcher("https://example.org", Mock(), ["a@example.org"], True)
+    imported.assert_called_once_with("bcn_half.browser")
+    watcher.executor.shutdown()
+    watcher.client.close()
